@@ -28,39 +28,84 @@ API_URL = "https://en.wikipedia.org/w/api.php"
 # -----------------------------------------------------------------------
 
 DRIVER_ARTICLES = [
+    # Legends / Historical Icons
     "Michael Schumacher", "Ayrton Senna", "Alain Prost",
+    "Juan Manuel Fangio", "Jim Clark", "Niki Lauda",
+    "Jackie Stewart", "Nigel Mansell", "Nelson Piquet",
+    "Emerson Fittipaldi",
+
+    # Modern Champions & Era-Defining Drivers
     "Lewis Hamilton", "Max Verstappen", "Sebastian Vettel",
-    "Fernando Alonso", "Niki Lauda", "Jim Clark",
-    "Juan Manuel Fangio", "Jackie Stewart", "Nigel Mansell",
-    "Mika Häkkinen", "Kimi Räikkönen", "Nelson Piquet",
-    "Emerson Fittipaldi", "Jenson Button", "Damon Hill",
-    "Lando Norris", "Charles Leclerc", "Carlos Sainz Jr.",
-    "Daniel Ricciardo", "Valtteri Bottas", "Oscar Piastri",
-    "George Russell (racing driver)",
+    "Fernando Alonso", "Kimi Räikkönen", "Mika Häkkinen",
+    "Jenson Button", "Damon Hill",
+
+    # Recent & Current Top Drivers
+    "Lando Norris", "Charles Leclerc", "George Russell (racing driver)",
+    "Carlos Sainz Jr.", "Oscar Piastri", "Alex Albon",
+    "Pierre Gasly", "Esteban Ocon", "Lance Stroll",
+    "Valtteri Bottas", "Nico Hülkenberg",
+
+    # New-Generation (Active 2026 Grid)
+    "Andrea Kimi Antonelli",
+    "Oliver Bearman",
+    "Gabriel Bortoleto",
+    "Arvid Lindblad",
+    "Liam Lawson",
+    "Franco Colapinto",
+    "Isack Hadjar",
+    "Sergio Pérez",
 ]
 
 CONSTRUCTOR_ARTICLES = [
-    "Scuderia Ferrari", "McLaren", "Mercedes-Benz in Formula One",
-    "Red Bull Racing", "Williams Racing", "Lotus 49",
-    "Renault in Formula One", "Aston Martin in Formula One",
-    "Alpine F1 Team", "Haas F1 Team",
+    "Scuderia Ferrari",
+    "McLaren",
+    "Mercedes-Benz in Formula One",
+    "Red Bull Racing",
+    "Williams Racing",
+    "Aston Martin in Formula One",
+    "Alpine F1 Team",
+    "Haas F1 Team",
+    "Sauber Motorsport",
+    "Audi Formula One project",
+    "Racing Bulls",
+    "Cadillac Formula One Team",
 ]
 
 CIRCUIT_ARTICLES = [
-    "Circuit de Monaco", "Silverstone Circuit", "Monza Circuit",
-    "Spa-Francorchamps", "Suzuka International Racing Course",
-    "Interlagos", "Circuit de Barcelona-Catalunya",
-    "Hungaroring", "Circuit Gilles Villeneuve",
-    "Bahrain International Circuit", "Yas Marina Circuit",
-    "Jeddah Corniche Circuit", "Las Vegas Grand Prix",
+    "Circuit de Monaco",
+    "Silverstone Circuit",
+    "Autodromo Nazionale Monza",
+    "Circuit de Spa-Francorchamps",
+    "Suzuka International Racing Course",
+    "Interlagos Circuit",
+    "Circuit de Barcelona-Catalunya",
+    "Hungaroring",
+    "Circuit Gilles Villeneuve",
+    "Bahrain International Circuit",
+    "Yas Marina Circuit",
+    "Jeddah Corniche Circuit",
+    "Las Vegas Strip Circuit",
+    "Miami International Autodrome",
+    "Circuit of the Americas",
+    "Marina Bay Street Circuit",
+    "Zandvoort Circuit",
 ]
 
 TOPIC_ARTICLES = [
-    "Formula One", "Formula One car", "History of Formula One",
-    "Formula One regulations", "DRS (Formula One)",
-    "Formula One tyres", "FIA", "Formula One World Championship",
+    "Formula One",
+    "Formula One car",
+    "History of Formula One",
+    "Formula One regulations",
+    "2026 Formula One technical regulations",
+    "Drag reduction system",
+    "Formula One tyres",
+    "Fédération Internationale de l'Automobile",
+    "Formula One World Championship",
     "List of Formula One World Drivers' Champions",
     "Formula One Group",
+    "List of Formula One constructors",
+    "Hybrid electric vehicle technology in Formula One",
+    "Sustainable fuels in Formula One",
 ]
 
 ALL_ARTICLES = DRIVER_ARTICLES + CONSTRUCTOR_ARTICLES + CIRCUIT_ARTICLES + TOPIC_ARTICLES

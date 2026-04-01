@@ -7,7 +7,6 @@ import json
 from collections.abc import AsyncIterator
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ingestion.core.config import settings
 from ingestion.core.logging import get_logger
@@ -22,14 +21,14 @@ from ingestion.extractors.base import BaseExtractor
 log = get_logger(__name__)
 
 BASE_URL = "https://api.jolpi.ca/ergast/f1"
-PAGE_LIMIT = 100
+PAGE_LIMIT = 1000
 
 
 class JolpicaExtractor(BaseExtractor):
     def __init__(
         self,
         start_year: int = 1950,
-        end_year: int = 2024,
+        end_year: int = 2025,
     ) -> None:
         self.start_year = start_year
         self.end_year = end_year
@@ -39,15 +38,28 @@ class JolpicaExtractor(BaseExtractor):
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    @retry(
-        stop=stop_after_attempt(settings.max_retries),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def _get(self, url: str, params: dict | None = None) -> dict:
-        resp = await self._client.get(url, params=params)
+        max_retries = 8
+        for attempt in range(max_retries):
+            resp = await self._client.get(url, params=params)
+
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                log.warning(
+                    "jolpica.rate_limited",
+                    url=url,
+                    retry_after=retry_after,
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(retry_after)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        # If we exhausted all retries on 429s
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()  # unreachable but keeps type checker happy
 
     async def _get_all_pages(self, path: str) -> list[dict]:
         """Fetch all pages from a paginated Jolpica endpoint."""
@@ -84,7 +96,7 @@ class JolpicaExtractor(BaseExtractor):
             if offset >= total:
                 break
 
-            await asyncio.sleep(settings.request_delay_seconds)
+            await asyncio.sleep(max(settings.request_delay_seconds, 1.5))
 
         return all_items
 
@@ -98,10 +110,12 @@ class JolpicaExtractor(BaseExtractor):
         # --- Drivers ---
         async for doc in self._extract_drivers():
             yield doc
+        await asyncio.sleep(2)
 
         # --- Constructors ---
         async for doc in self._extract_constructors():
             yield doc
+        await asyncio.sleep(2)
 
         # --- Per-year data ---
         for year in range(self.start_year, self.end_year + 1):
@@ -109,10 +123,15 @@ class JolpicaExtractor(BaseExtractor):
 
             async for doc in self._extract_race_results(year):
                 yield doc
+            await asyncio.sleep(1)
+
             async for doc in self._extract_qualifying(year):
                 yield doc
+            await asyncio.sleep(1)
+
             async for doc in self._extract_standings(year):
                 yield doc
+            await asyncio.sleep(1)
 
         await self._client.aclose()
         log.info("jolpica.done")
