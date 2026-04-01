@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text"
 
+    # HTTP
+    user_agent: str = "F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"
+
     # Ingestion tuning
     request_delay_seconds: float = 0.5
     max_retries: int = 3

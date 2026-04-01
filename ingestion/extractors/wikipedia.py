@@ -68,7 +68,10 @@ ALL_ARTICLES = DRIVER_ARTICLES + CONSTRUCTOR_ARTICLES + CIRCUIT_ARTICLES + TOPIC
 
 class WikipediaExtractor(BaseExtractor):
     def __init__(self) -> None:
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(
+            timeout=30.0,
+            headers={"User-Agent": settings.user_agent},
+        )
 
     # ------------------------------------------------------------------
     # Wikitext cleanup

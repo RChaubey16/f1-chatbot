@@ -10,3 +10,5 @@ dist/
 
 # MANUAL ADDITIONS
 docs/
+.claude/
+explain/

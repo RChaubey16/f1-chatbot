@@ -70,7 +70,10 @@ async def check_jolpica() -> bool:
 
 async def check_wikipedia() -> bool:
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={"User-Agent": settings.user_agent},
+        ) as client:
             resp = await client.get(
                 "https://en.wikipedia.org/w/api.php",
                 params={"action": "query", "meta": "siteinfo", "format": "json"},
