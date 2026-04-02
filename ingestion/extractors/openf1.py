@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ingestion.core.config import settings
 from ingestion.core.logging import get_logger
@@ -23,6 +22,8 @@ from ingestion.extractors.base import BaseExtractor
 log = get_logger(__name__)
 
 BASE_URL = "https://api.openf1.org/v1"
+# Delay between requests within a session — OpenF1 rate-limits aggressively
+REQUEST_DELAY = 2.0
 
 
 class OpenF1Extractor(BaseExtractor):
@@ -49,16 +50,40 @@ class OpenF1Extractor(BaseExtractor):
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def _get(self, path: str, params: dict | None = None) -> list[dict]:
+        """GET a list from the OpenF1 API.
+
+        - 404: returns [] immediately (no data for this session/endpoint — not an error)
+        - 429: waits for Retry-After then retries (up to max_retries attempts)
+        - Other 4xx/5xx: raises after max_retries attempts
+        """
         url = f"{BASE_URL}/{path}"
-        resp = await self._client.get(url, params=params)
+
+        for attempt in range(settings.max_retries):
+            resp = await self._client.get(url, params=params)
+
+            if resp.status_code == 404:
+                # Endpoint has no data for these params (e.g. practice sessions
+                # don't have position/stint/pit data) — return empty, don't retry.
+                return []
+
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 15))
+                log.warning(
+                    "openf1.rate_limited",
+                    url=url,
+                    retry_after=retry_after,
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(retry_after)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        # Exhausted retries — raise the last response's error
         resp.raise_for_status()
-        return resp.json()
+        return []  # unreachable but keeps type checker happy
 
     # ------------------------------------------------------------------
     # Extraction
@@ -97,7 +122,7 @@ class OpenF1Extractor(BaseExtractor):
             async for doc in self._extract_session_detail(session_key, session):
                 yield doc
 
-            await asyncio.sleep(settings.request_delay_seconds)
+            await asyncio.sleep(REQUEST_DELAY)
 
         await self._client.aclose()
         log.info("openf1.done")
@@ -192,7 +217,7 @@ class OpenF1Extractor(BaseExtractor):
         except Exception as exc:
             log.warning("openf1.position.fail", session_key=session_key, error=str(exc))
 
-        await asyncio.sleep(settings.request_delay_seconds)
+        await asyncio.sleep(REQUEST_DELAY)
 
         # Stints
         try:
@@ -202,7 +227,7 @@ class OpenF1Extractor(BaseExtractor):
         except Exception as exc:
             log.warning("openf1.stints.fail", session_key=session_key, error=str(exc))
 
-        await asyncio.sleep(settings.request_delay_seconds)
+        await asyncio.sleep(REQUEST_DELAY)
 
         # Pit stops
         try:
@@ -211,6 +236,8 @@ class OpenF1Extractor(BaseExtractor):
                 yield self._pit_doc(pits, session_key, gp_name, session_name)
         except Exception as exc:
             log.warning("openf1.pit.fail", session_key=session_key, error=str(exc))
+
+        await asyncio.sleep(REQUEST_DELAY)
 
     def _position_doc(
         self,
