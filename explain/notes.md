@@ -19,30 +19,40 @@ this is for you.
 9. [The Embedder — How We Turn Text Into Numbers](#9-the-embedder--how-we-turn-text-into-numbers)
 10. [The Loader — How We Store Everything in the Database](#10-the-loader--how-we-store-everything-in-the-database)
 11. [The Pipeline — How Everything Runs Together](#11-the-pipeline--how-everything-runs-together)
-12. [The Health Check — Making Sure Everything Is Online](#12-the-health-check--making-sure-everything-is-online)
-13. [The Tests — How We Verify Our Code Works](#13-the-tests--how-we-verify-our-code-works)
-14. [Docker — Running Services Without Installing Them](#14-docker--running-services-without-installing-them)
-15. [The Database Schema — How Data Is Organised on Disk](#15-the-database-schema--how-data-is-organised-on-disk)
-16. [Key Python Concepts Used in This Project](#16-key-python-concepts-used-in-this-project)
-17. [How to Run the Project](#17-how-to-run-the-project)
-18. [Glossary](#18-glossary)
+12. [The Scheduler — Keeping Live Data Fresh Automatically](#12-the-scheduler--keeping-live-data-fresh-automatically)
+13. [The Health Check — Making Sure Everything Is Online](#13-the-health-check--making-sure-everything-is-online)
+14. [The Tests — How We Verify Our Code Works](#14-the-tests--how-we-verify-our-code-works)
+15. [Docker — Running Services Without Installing Them](#15-docker--running-services-without-installing-them)
+16. [The Database Schema — How Data Is Organised on Disk](#16-the-database-schema--how-data-is-organised-on-disk)
+17. [Key Python Concepts Used in This Project](#17-key-python-concepts-used-in-this-project)
+18. [How to Run the Project](#18-how-to-run-the-project)
+19. [Glossary](#19-glossary)
 
 ---
 
 ## 1. What Is This Project?
 
-This is a chatbot that can answer questions about Formula 1 racing history — from
-the very first championship in 1950 to 2024. For example:
+This is a chatbot that can answer questions about Formula 1 racing — from the
+first championship in 1950 right through to live coverage of the current season.
+For example:
 
 - "Who won the 2019 Monaco Grand Prix?"
 - "How many championships did Michael Schumacher win?"
 - "Tell me about the history of the Silverstone Circuit."
+- "What happened in the last race weekend?"
 
 To answer these questions, the chatbot needs a **knowledge base** — a searchable
-store of F1 facts. Phase 1 (what we've built so far) is entirely about building
-that knowledge base by:
+store of F1 facts. We've built two layers so far:
 
-1. **Fetching** data from external sources (F1 APIs and Wikipedia)
+- **Phase 1 (Static KB):** Historical data 1950–2024 — race results, qualifying,
+  standings, driver/constructor profiles, Wikipedia articles.
+- **Phase 2 (Live KB):** Current-season data — live session results from the
+  OpenF1 API and recent news from Motorsport.com, refreshed automatically on a
+  schedule.
+
+Both phases follow the same four steps:
+
+1. **Fetching** data from external sources (APIs and web scraping)
 2. **Breaking** that data into small, digestible chunks
 3. **Converting** those chunks into mathematical representations (vectors)
 4. **Storing** everything in a database that can search by meaning
@@ -90,8 +100,9 @@ User asks: "Who won the 2019 Monaco Grand Prix?"
  driving for Mercedes."
 ```
 
-**Phase 1 builds the "RETRIEVE" part** — the searchable knowledge base. Phases 2
-and 3 (not built yet) will add the "AUGMENT" and "GENERATE" parts.
+**Phases 1 and 2 build the "RETRIEVE" part** — the searchable knowledge base,
+both historical and live. Phase 3 (not built yet) will add the "AUGMENT" and
+"GENERATE" parts.
 
 ---
 
@@ -137,9 +148,10 @@ one is and why we need it.
 | **asyncpg** | Fast PostgreSQL driver for async Python | Used by SQLAlchemy under the hood for database connections |
 | **structlog** | Structured logging (better than `print()`) | All modules — logs what's happening with timestamps and context |
 | **tqdm** | Shows progress bars in the terminal | Pipeline — shows how many documents have been processed |
-| **beautifulsoup4** / **lxml** | Parses HTML (for future use) | Available for Wikipedia HTML parsing if needed |
+| **beautifulsoup4** / **lxml** | Parses HTML | News extractor — extracts article body, headline, and date from Motorsport.com pages |
+| **apscheduler** | Runs jobs on a schedule | Scheduler — fires the OpenF1 refresh and news scrape jobs every few hours |
 | **pytest** | Testing framework | Runs our test suite to verify code works |
-| **respx** | Mocks HTTP requests in tests | Tests — pretends to be the Jolpica/Wikipedia API so tests don't need the internet |
+| **respx** | Mocks HTTP requests in tests | Tests — pretends to be the Jolpica/Wikipedia/OpenF1 API so tests don't need the internet |
 
 ---
 
@@ -157,7 +169,7 @@ f1-chatbot/
 ├── db/
 │   └── schema.sql                # SQL commands that create the database tables
 │
-├── ingestion/                    # *** PHASE 1 — Everything we built ***
+├── ingestion/                    # *** PHASES 1 & 2 — The full ingestion system ***
 │   ├── __init__.py               # Marks this folder as a Python "package"
 │   │
 │   ├── core/                     # Shared foundations
@@ -169,8 +181,10 @@ f1-chatbot/
 │   ├── extractors/               # Step 1: Fetch raw data
 │   │   ├── __init__.py
 │   │   ├── base.py               # Template that all extractors must follow
-│   │   ├── jolpica.py            # Fetches F1 race data from Jolpica API
-│   │   └── wikipedia.py          # Fetches F1 articles from Wikipedia
+│   │   ├── jolpica.py            # [Phase 1] Fetches historical F1 data from Jolpica API
+│   │   ├── wikipedia.py          # [Phase 1] Fetches F1 articles from Wikipedia
+│   │   ├── openf1.py             # [Phase 2] Fetches live session data from OpenF1 API
+│   │   └── news.py               # [Phase 2] Scrapes F1 news from Motorsport.com
 │   │
 │   ├── transformers/             # Step 2: Break data into chunks
 │   │   ├── __init__.py
@@ -182,26 +196,29 @@ f1-chatbot/
 │   │
 │   ├── loaders/                  # Step 4: Save to database
 │   │   ├── __init__.py
-│   │   └── pgvector.py           # Inserts into PostgreSQL
+│   │   └── pgvector.py           # Inserts into PostgreSQL (+ url_exists, prune_live)
 │   │
-│   ├── pipeline.py               # Orchestrates steps 1-4 together
+│   ├── pipeline.py               # Orchestrates steps 1-4 (static + live phases)
+│   ├── scheduler.py              # [Phase 2] APScheduler — auto-refreshes live data
 │   └── healthcheck.py            # Verifies all services are running
 │
-├── tests/                        # Automated tests
+├── tests/                        # Automated tests (23 total)
 │   ├── __init__.py
 │   ├── conftest.py               # Shared test setup
-│   ├── test_extractors.py        # Tests for Jolpica + Wikipedia extractors
-│   └── test_pipeline.py          # Tests for the chunker
+│   ├── test_extractors.py        # Tests for all four extractors
+│   ├── test_pipeline.py          # Tests for the chunker
+│   └── test_scheduler.py         # [Phase 2] Tests for scheduler jobs and registration
 │
 ├── agent/                        # Phase 3 (empty — not built yet)
 ├── api/                          # Phase 3 (empty — not built yet)
 │
-├── docs/                         # Planning documents
+├── docs/                         # Planning and summary documents
 │   ├── PLAN.md
 │   ├── PHASE_1.md
 │   ├── PHASE_2.md
 │   ├── PHASE_3.md
-│   └── Phase-1-summary.md        # Detailed technical summary
+│   ├── Phase-1-summary.md        # Detailed technical summary — Phase 1
+│   └── Phase-2-summary.md        # Detailed technical summary — Phase 2
 │
 └── explain/
     └── notes.md                  # This file!
@@ -536,6 +553,75 @@ Hamilton has won seven World Championships, tying Michael Schumacher.
 The `_clean_wikitext()` method uses **regular expressions** (patterns for finding
 and replacing text) to strip all that markup away.
 
+### The OpenF1 Extractor (Phase 2)
+
+**File:** `ingestion/extractors/openf1.py`
+
+Fetches **live** current-season data from `https://api.openf1.org/v1` — a free,
+open API that needs no API key.
+
+**What it fetches:**
+
+| Endpoint | What It Contains | Example |
+|----------|-----------------|---------|
+| `/sessions` | Every session (FP1, qualifying, race) in the season | "Australian GP 2024 — Race" |
+| `/drivers` | Current-season driver roster with car numbers | Driver #1, Max Verstappen |
+| `/position` | Final race classification per session | P1: Driver #1, P2: Driver #16 |
+| `/stints` | Tyre compound used per stint per driver | Driver #44: Medium laps 1–18, Hard laps 19–57 |
+| `/pit` | Pit stop timing per driver | Driver #1: lap 20 — 2.4s |
+
+**Incremental sync** is the key feature here. Instead of re-downloading the
+entire season every time the scheduler runs, the extractor accepts a `since`
+timestamp:
+
+```
+First run (since=None):   fetch all sessions from Jan 1, 2024
+Second run (since=Apr 1): fetch only sessions after Apr 1 → much faster
+```
+
+The scheduler stores the last-sync timestamp in the `sync_state` database table
+and passes it to the extractor on subsequent runs.
+
+**Error handling per endpoint:** If fetching `/stints` fails for one session, it
+logs a warning and moves on to `/pit` — one bad endpoint doesn't abort the whole
+session.
+
+### The News Extractor (Phase 2)
+
+**File:** `ingestion/extractors/news.py`
+
+Scrapes F1 news articles from `https://www.motorsport.com/f1/news/`.
+
+**How it works, step by step:**
+
+```
+1. Fetch the index page (the main F1 news listing)
+2. Find all article links — looks for <a> tags inside article cards
+   (falls back to any link containing /f1/news/ if layout changes)
+3. For each article URL:
+   a. Check if this URL is already in the database → skip if yes
+   b. Fetch the full article page
+   c. Extract: headline, publication date, author, body text, keywords
+   d. Strip boilerplate: nav bars, ads, "related articles" sections
+   e. Yield one RawDocument with the article body as raw_content
+```
+
+**Why URL-based dedup instead of fingerprint dedup?**
+
+News articles can be updated after publication (correcting typos, adding
+follow-up). If the content changes, the fingerprint changes — so we'd store the
+article twice. URLs, however, are stable identifiers. We check the URL first:
+
+```python
+# Before fetching: does this URL already exist in the DB?
+if await loader.url_exists(url):
+    skip  # already ingested this article
+```
+
+**Graceful degradation:** If Motorsport.com changes its HTML layout and the
+scraper can't find any article links, it logs a warning and returns 0 documents
+instead of crashing. The scheduler job keeps running.
+
 ---
 
 ## 8. The Chunker — How We Break Text Into Bite-Sized Pieces
@@ -742,23 +828,31 @@ is present.
 
 **File:** `ingestion/pipeline.py`
 
-The pipeline is the **conductor** that orchestrates all the pieces:
+The pipeline is the **conductor** that orchestrates all the pieces. It has two
+modes: `static` (historical, Phase 1) and `live` (current season, Phase 2).
 
 ```
-for each extractor (Jolpica, Wikipedia):
-    for each document from extractor:
-        │
-        ├─ Is fingerprint already in database?
-        │   ├─ YES → skip (already processed)
-        │   └─ NO  → continue ↓
-        │
-        ├─ Chunk the document (Chunker)
-        │
-        ├─ Embed all chunks (OllamaEmbedder)
-        │
-        └─ Store in database (PgVectorLoader)
+--phase static                         --phase live
+──────────────────────────             ──────────────────────────
+Jolpica + Wikipedia extractors         OpenF1 + News extractors
+        │                                      │
+        └──────────────┬────────────────────────┘
+                       │
+        for each document from extractor:
+               │
+               ├─ Is fingerprint already in database?
+               │   ├─ YES → skip (already processed)
+               │   └─ NO  → continue ↓
+               │
+               ├─ [News only] Is URL already in database? → skip
+               │
+               ├─ Chunk the document (Chunker)
+               │
+               ├─ Embed all chunks (OllamaEmbedder)
+               │
+               └─ Store in database (PgVectorLoader)
 
-After all documents:
+After static ingestion only:
     └─ Rebuild the vector search index
 ```
 
@@ -772,6 +866,15 @@ uv run python -m ingestion.pipeline --phase static
 
 # Ingest only a specific year range
 uv run python -m ingestion.pipeline --phase static --start-year 2000 --end-year 2024
+
+# Ingest live current-season data
+uv run python -m ingestion.pipeline --phase live
+
+# Ingest live data only from a specific date onwards
+uv run python -m ingestion.pipeline --phase live --since 2024-01-01
+
+# Run both phases back to back
+uv run python -m ingestion.pipeline --phase all
 ```
 
 **What does `uv run python -m ingestion.pipeline` mean?**
@@ -796,7 +899,86 @@ Fetched=3400 Skipped=0 Chunks: created=9820 embedded=9820 upserted=9820 Errors=0
 
 ---
 
-## 12. The Health Check — Making Sure Everything Is Online
+## 12. The Scheduler — Keeping Live Data Fresh Automatically
+
+**File:** `ingestion/scheduler.py`
+
+The pipeline (above) is something you run manually. But live data needs to update
+itself automatically — you don't want to remember to run a command every 6 hours
+during a race weekend.
+
+The **scheduler** solves this. It runs two jobs on a timer in the background.
+
+### What Is APScheduler?
+
+**APScheduler** (Advanced Python Scheduler) is a library that lets you say "run
+this function every N hours." It's like setting a repeating alarm on your phone,
+but for code.
+
+### The Two Jobs
+
+| Job | Function | Default interval | What it does |
+|-----|----------|-----------------|--------------|
+| `openf1_refresh` | `run_openf1_refresh()` | Every 6 hours | Fetches new sessions, stints, pit data from OpenF1 |
+| `news_scrape` | `run_news_scrape()` | Every 3 hours | Scrapes latest F1 articles from Motorsport.com |
+
+Both jobs have two safety settings:
+- **`max_instances=1`** — never run the same job twice at the same time (if the
+  6-hour run is still going when the next trigger fires, the new trigger is ignored)
+- **`coalesce=True`** — if multiple triggers were missed (e.g., computer was off),
+  only run the job once when it comes back, not once per missed trigger
+
+### Incremental Sync — Not Re-downloading Everything
+
+Every time a job runs, it needs to know "what's new since last time?" This is
+tracked in the `sync_state` database table:
+
+```
+sync_state table:
+┌──────────┬──────────────────────────┐
+│ source   │ last_synced_at           │
+├──────────┼──────────────────────────┤
+│ openf1   │ 2024-04-01 06:00:00 UTC  │
+│ news     │ 2024-04-01 03:00:00 UTC  │
+└──────────┴──────────────────────────┘
+```
+
+Before each job run, the scheduler reads `last_synced_at` and passes it to the
+extractor as `since`. The extractor then only fetches data newer than that
+timestamp. After a successful run, `last_synced_at` is updated.
+
+### Audit Log — The `job_runs` Table
+
+Every job execution writes a record to the `job_runs` table:
+
+```
+job_runs table:
+┌────┬──────────────────┬─────────────┬──────────────┬───────────────┬─────────┐
+│ id │ job_id           │ started_at  │ finished_at  │ docs_upserted │ success │
+├────┼──────────────────┼─────────────┼──────────────┼───────────────┼─────────┤
+│  1 │ openf1_refresh   │ 04-01 06:00 │ 04-01 06:03  │ 42            │ true    │
+│  2 │ news_scrape      │ 04-01 09:00 │ 04-01 09:01  │ 18            │ true    │
+│  3 │ openf1_refresh   │ 04-01 12:00 │ 04-01 12:03  │ 7             │ true    │
+└────┴──────────────────┴─────────────┴──────────────┴───────────────┴─────────┘
+```
+
+If a job fails (network down, API unavailable), `success=false` and the error
+message is recorded in the `errors` column. The scheduler keeps running and will
+try again at the next scheduled interval.
+
+### Running the Scheduler
+
+```bash
+# Starts the scheduler and runs it forever (until Ctrl+C)
+uv run python -m ingestion.scheduler
+```
+
+In Phase 3, the scheduler will start automatically when the FastAPI web server
+starts, rather than needing to be launched separately.
+
+---
+
+## 13. The Health Check — Making Sure Everything Is Online
 
 **File:** `ingestion/healthcheck.py`
 
@@ -824,7 +1006,7 @@ uv run python -m ingestion.healthcheck
 
 ---
 
-## 13. The Tests — How We Verify Our Code Works
+## 14. The Tests — How We Verify Our Code Works
 
 ### What Is Automated Testing?
 
@@ -835,13 +1017,15 @@ will catch it.
 
 ### Our Test Suite
 
-**Run with:** `uv run pytest tests/ -v`
+**Run with:** `uv run python -m pytest tests/ -v`
 
-#### `tests/test_extractors.py` — 4 Tests
+We have **23 tests** across three files, all passing.
 
-These test the Jolpica and Wikipedia extractors, but **without hitting the real
-APIs**. Instead, we use **mocking** (via the `respx` library) to intercept HTTP
-requests and return fake responses:
+#### `tests/test_extractors.py` — 10 Tests
+
+These test all four extractors **without hitting the real APIs**. Instead, we use
+**mocking** (via the `respx` library) to intercept HTTP requests and return fake
+responses:
 
 ```python
 @respx.mock
@@ -853,13 +1037,10 @@ async def test_jolpica_extracts_drivers():
 
     # Run the extractor — it thinks it's talking to the real API
     extractor = JolpicaExtractor(start_year=2024, end_year=2024)
-    docs = []
-    async for doc in extractor.extract():
-        docs.append(doc)
+    docs = [doc async for doc in extractor.extract()]
 
     # Verify the output
-    assert len(driver_docs) == 1
-    assert driver_docs[0].source == SourceType.JOLPICA
+    assert docs[0].source == SourceType.JOLPICA
 ```
 
 **Why mock?**
@@ -867,12 +1048,25 @@ async def test_jolpica_extracts_drivers():
 - Tests work without an internet connection
 - Tests are deterministic (same fake data every time)
 
+**Phase 1 extractor tests (Jolpica + Wikipedia):**
+
 | Test | What It Verifies |
 |------|-----------------|
 | `test_jolpica_extracts_drivers` | Jolpica extractor produces documents with correct source, type, and content |
 | `test_jolpica_fingerprint_changes_with_content` | Different content produces different fingerprints |
 | `test_wikipedia_extracts_sections` | Wikipedia extractor yields narrative documents with proper metadata |
 | `test_wikipedia_clean_wikitext` | Wikitext cleanup strips templates, links, and refs correctly |
+
+**Phase 2 extractor tests (OpenF1 + News):**
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_openf1_extracts_sessions` | OpenF1 extractor yields a session doc with correct `session_key` and `partition=LIVE` |
+| `test_openf1_extracts_stints` | Stint narrative contains tyre compound names |
+| `test_openf1_returns_empty_on_no_sessions` | Returns 0 docs without error when API returns empty list |
+| `test_news_extracts_articles` | News extractor yields articles with correct source, URL, and body |
+| `test_news_skips_known_urls` | Injecting `url_exists_fn=always_true` causes all articles to be skipped |
+| `test_news_returns_empty_on_broken_layout` | Index page with no recognisable links yields 0 docs (not a crash) |
 
 #### `tests/test_pipeline.py` — 6 Tests
 
@@ -887,6 +1081,22 @@ These test the chunker without any mocking (it's pure logic, no network):
 | `test_idempotent_fingerprint` | Same content always produces the same fingerprint |
 | `test_different_content_different_fingerprint` | Different content never collides |
 
+#### `tests/test_scheduler.py` — 7 Tests (Phase 2)
+
+These test the scheduler **without starting a real database or running real jobs**.
+They use Python's `unittest.mock` to replace the database calls and pipeline
+components with fake versions:
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_scheduler_registers_both_jobs` | `create_scheduler()` registers `openf1_refresh` and `news_scrape` |
+| `test_scheduler_jobs_have_max_instances_one` | Both jobs have `max_instances=1` (no overlap) |
+| `test_scheduler_jobs_have_coalesce` | Both jobs have `coalesce=True` (missed triggers collapsed) |
+| `test_scheduler_interval_matches_config` | Trigger intervals match the values in `settings` |
+| `test_run_openf1_refresh_writes_job_run` | Job writes a `job_runs` row with `success=True` on clean run |
+| `test_run_news_scrape_writes_job_run` | Same for the news job |
+| `test_run_openf1_refresh_records_failure` | When DB throws an error, job writes `success=False` and records the error |
+
 #### `tests/conftest.py` — Shared Setup
 
 Automatically initialises structured logging before every test. `conftest.py` is
@@ -894,7 +1104,7 @@ a special pytest file — fixtures defined here are available to all test files.
 
 ---
 
-## 14. Docker — Running Services Without Installing Them
+## 15. Docker — Running Services Without Installing Them
 
 ### What Is Docker?
 
@@ -941,7 +1151,7 @@ uses 5432, but Docker maps it to 5433 on your host.
 
 ---
 
-## 15. The Database Schema — How Data Is Organised on Disk
+## 16. The Database Schema — How Data Is Organised on Disk
 
 **File:** `db/schema.sql`
 
@@ -1004,7 +1214,7 @@ CREATE INDEX chunks_content_tsv_idx ON chunks USING gin(content_tsv);
 
 ---
 
-## 16. Key Python Concepts Used in This Project
+## 17. Key Python Concepts Used in This Project
 
 ### `async` / `await` — Doing Things Concurrently
 
@@ -1079,7 +1289,7 @@ immediately.
 
 ---
 
-## 17. How to Run the Project
+## 18. How to Run the Project
 
 ### First-Time Setup
 
@@ -1104,18 +1314,31 @@ uv run python -m ingestion.healthcheck
 ### Running the Ingestion Pipeline
 
 ```bash
-# Full run (1950-2024) — takes 30-45 minutes
+# Full static run (1950-2024) — takes 30-45 minutes
 uv run python -m ingestion.pipeline --phase static
 
-# Quick test run (just one year)
+# Quick static test run (just one year)
 uv run python -m ingestion.pipeline --phase static --start-year 2024 --end-year 2024
+
+# Live ingestion (current-season data from OpenF1 + news)
+uv run python -m ingestion.pipeline --phase live
+
+# Live ingestion from a specific date
+uv run python -m ingestion.pipeline --phase live --since 2024-01-01
+```
+
+### Running the Scheduler
+
+```bash
+# Starts the background scheduler — runs forever until Ctrl+C
+uv run python -m ingestion.scheduler
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests with verbose output
-uv run pytest tests/ -v
+# Run all 23 tests with verbose output
+uv run python -m pytest tests/ -v
 ```
 
 ### Stopping Everything
@@ -1126,11 +1349,12 @@ docker compose down   # Stops PostgreSQL and Ollama
 
 ---
 
-## 18. Glossary
+## 19. Glossary
 
 | Term | Definition |
 |------|-----------|
 | **API** | A way for programs to communicate. Our code calls F1 APIs to get data. |
+| **APScheduler** | A Python library for running functions on a repeating schedule (e.g. every 6 hours). |
 | **Async** | A programming style where the program can do other work while waiting for slow operations (like network requests). |
 | **Chunk** | A small piece of text (512-800 characters) that can be embedded and searched independently. |
 | **CLI** | Command-Line Interface — running a program by typing commands in a terminal. |
@@ -1144,17 +1368,22 @@ docker compose down   # Stops PostgreSQL and Ollama
 | **Fingerprint** | A hash (unique ID) generated from content. Same content always produces the same fingerprint. |
 | **Hash** | A function that converts input of any size to a fixed-size output. Used for dedup and integrity checks. |
 | **Idempotent** | An operation that produces the same result no matter how many times you run it. Our pipeline is idempotent. |
+| **Incremental sync** | Fetching only data that is newer than the last successful run, rather than re-downloading everything. |
 | **Index** | A database structure that speeds up searches (like a book's index speeds up finding topics). |
 | **IVFFlat** | A type of vector index that clusters vectors for faster approximate nearest-neighbour search. |
 | **JSON** | JavaScript Object Notation — a text format for structured data, like `{"key": "value"}`. |
 | **Mock** | In testing, a fake version of something (like a fake API) that returns predetermined responses. |
+| **OpenF1** | A free, open REST API providing live Formula 1 data — sessions, positions, stints, and pit stops. |
 | **Pagination** | Fetching large datasets in small pages (e.g., 100 items at a time). |
+| **Partition** | A label on each document/chunk marking whether it belongs to historical (`static`) or live (`live`) data. |
 | **pgvector** | A PostgreSQL extension that adds support for storing and searching vectors. |
 | **Pipeline** | A sequence of processing steps where each step's output feeds into the next. |
 | **PostgreSQL** | An open-source relational database that stores data in tables. |
 | **RAG** | Retrieval-Augmented Generation — a technique where an AI retrieves relevant facts before generating an answer. |
 | **Rate Limiting** | Adding delays between API calls to avoid overwhelming the server. |
 | **Schema** | The structure of a database — what tables exist and what columns they have. |
+| **Scheduler** | A background process that runs jobs (like data refresh) automatically at regular intervals. |
+| **Scraping** | Extracting data from web pages by parsing their HTML. Used by the News extractor. |
 | **Singleton** | A design pattern where only one instance of something exists. Our `settings` object is a singleton. |
 | **SQL** | Structured Query Language — the language used to create tables, insert data, and query databases. |
 | **Upsert** | "Update or Insert" — insert a row if it doesn't exist, update it if it does. |

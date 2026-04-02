@@ -28,5 +28,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = 80
     embedding_batch_size: int = 32
 
+    # Scheduler intervals (Phase 2)
+    live_refresh_interval_hours: int = 6
+    news_refresh_interval_hours: int = 3
+
 
 settings = Settings()

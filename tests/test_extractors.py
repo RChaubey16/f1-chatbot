@@ -1,4 +1,4 @@
-"""Tests for Jolpica and Wikipedia extractors."""
+"""Tests for Jolpica, Wikipedia, OpenF1, and News extractors."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import respx
 
 from ingestion.core.models import ContentType, KBPartition, SourceType
 from ingestion.extractors.jolpica import JolpicaExtractor
+from ingestion.extractors.news import NewsExtractor
+from ingestion.extractors.openf1 import OpenF1Extractor
 from ingestion.extractors.wikipedia import WikipediaExtractor
 
 
@@ -178,3 +180,188 @@ async def test_wikipedia_clean_wikitext():
     assert "<ref" not in cleaned
     assert "Hamilton" in cleaned
     assert "world" in cleaned
+
+
+# -----------------------------------------------------------------------
+# OpenF1 extractor tests
+# -----------------------------------------------------------------------
+
+def _openf1_session() -> dict:
+    return {
+        "session_key": 9158,
+        "session_name": "Race",
+        "meeting_name": "Australian Grand Prix",
+        "date_start": "2024-03-24T05:00:00",
+        "circuit_short_name": "Albert Park",
+        "country_name": "Australia",
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openf1_extracts_sessions():
+    session = _openf1_session()
+
+    respx.get("https://api.openf1.org/v1/sessions").mock(
+        return_value=httpx.Response(200, json=[session])
+    )
+    respx.get("https://api.openf1.org/v1/drivers").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    # Mock all per-session detail endpoints to return empty
+    respx.get("https://api.openf1.org/v1/position").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("https://api.openf1.org/v1/stints").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("https://api.openf1.org/v1/pit").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    extractor = OpenF1Extractor(season=2024)
+    docs = [doc async for doc in extractor.extract()]
+
+    session_docs = [d for d in docs if d.content_type == ContentType.RACE_RESULT]
+    assert len(session_docs) >= 1
+    assert session_docs[0].source == SourceType.OPENF1
+    assert session_docs[0].partition == KBPartition.LIVE
+
+    data = json.loads(session_docs[0].raw_content)
+    assert data["session_key"] == 9158
+    assert data["meeting_name"] == "Australian Grand Prix"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openf1_extracts_stints():
+    session = _openf1_session()
+    stints = [
+        {"driver_number": 1, "compound": "MEDIUM", "lap_start": 1, "lap_end": 18},
+        {"driver_number": 1, "compound": "HARD", "lap_start": 19, "lap_end": 57},
+    ]
+
+    respx.get("https://api.openf1.org/v1/sessions").mock(
+        return_value=httpx.Response(200, json=[session])
+    )
+    respx.get("https://api.openf1.org/v1/drivers").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("https://api.openf1.org/v1/position").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("https://api.openf1.org/v1/stints").mock(
+        return_value=httpx.Response(200, json=stints)
+    )
+    respx.get("https://api.openf1.org/v1/pit").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    extractor = OpenF1Extractor(season=2024)
+    docs = [doc async for doc in extractor.extract()]
+
+    stint_docs = [d for d in docs if d.metadata.get("data_type") == "stints"]
+    assert len(stint_docs) == 1
+    assert "MEDIUM" in stint_docs[0].metadata["narrative"]
+    assert "HARD" in stint_docs[0].metadata["narrative"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openf1_returns_empty_on_no_sessions():
+    respx.get("https://api.openf1.org/v1/sessions").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+
+    extractor = OpenF1Extractor(season=2024)
+    docs = [doc async for doc in extractor.extract()]
+    assert docs == []
+
+
+# -----------------------------------------------------------------------
+# News extractor tests
+# -----------------------------------------------------------------------
+
+_INDEX_HTML = """
+<html><body>
+  <article>
+    <a href="/f1/news/verstappen-wins-2024-bahrain-gp/123/">Verstappen wins</a>
+  </article>
+  <article>
+    <a href="/f1/news/hamilton-mercedes-contract/456/">Hamilton contract</a>
+  </article>
+</body></html>
+"""
+
+_ARTICLE_HTML = """
+<html>
+<head>
+  <meta property="article:published_time" content="2024-03-02T15:00:00+00:00">
+  <meta name="author" content="Jane Doe">
+  <meta name="keywords" content="f1, verstappen, bahrain">
+</head>
+<body>
+  <h1>Verstappen wins 2024 Bahrain GP</h1>
+  <article>
+    <div class="ms-article-content">
+      <p>Max Verstappen claimed victory at the 2024 Bahrain Grand Prix.</p>
+      <p>He led from pole position and managed his tyres brilliantly.</p>
+    </div>
+  </article>
+</body>
+</html>
+"""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_news_extracts_articles():
+    respx.get("https://www.motorsport.com/f1/news/").mock(
+        return_value=httpx.Response(200, text=_INDEX_HTML)
+    )
+    respx.get(url__regex=r".*motorsport\.com/f1/news/.*").mock(
+        return_value=httpx.Response(200, text=_ARTICLE_HTML)
+    )
+
+    extractor = NewsExtractor(max_articles=5)
+    docs = [doc async for doc in extractor.extract()]
+
+    assert len(docs) >= 1
+    assert docs[0].source == SourceType.NEWS
+    assert docs[0].content_type == ContentType.NARRATIVE
+    assert docs[0].partition == KBPartition.LIVE
+    assert "Verstappen" in docs[0].raw_content
+    assert docs[0].metadata["url"].startswith("https://www.motorsport.com/f1/news/")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_news_skips_known_urls():
+    respx.get("https://www.motorsport.com/f1/news/").mock(
+        return_value=httpx.Response(200, text=_INDEX_HTML)
+    )
+    respx.get(url__regex=r".*motorsport\.com/f1/news/.*").mock(
+        return_value=httpx.Response(200, text=_ARTICLE_HTML)
+    )
+
+    # url_exists_fn always returns True — all articles should be skipped
+    async def always_exists(url: str) -> bool:
+        return True
+
+    extractor = NewsExtractor(max_articles=5, url_exists_fn=always_exists)
+    docs = [doc async for doc in extractor.extract()]
+    assert docs == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_news_returns_empty_on_broken_layout():
+    # Index returns HTML with no article links
+    respx.get("https://www.motorsport.com/f1/news/").mock(
+        return_value=httpx.Response(200, text="<html><body><p>Nothing here</p></body></html>")
+    )
+
+    extractor = NewsExtractor(max_articles=5)
+    docs = [doc async for doc in extractor.extract()]
+    # Should yield 0 docs, not raise
+    assert docs == []

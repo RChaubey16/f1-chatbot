@@ -110,6 +110,47 @@ class PgVectorLoader:
                 )
         log.info("pgvector.rebuild_index.done")
 
+    async def url_exists(self, url: str) -> bool:
+        """Return True if a document with metadata->>'url' = url already exists."""
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("SELECT 1 FROM documents WHERE metadata->>'url' = :url"),
+                {"url": url},
+            )
+            return result.scalar() is not None
+
+    async def prune_live_partition(self, older_than_days: int = 90) -> int:
+        """Delete live chunks (and orphaned documents) older than N days.
+
+        Returns the number of chunks deleted.
+        """
+        log.info("pgvector.prune_live", older_than_days=older_than_days)
+        async with AsyncSession(self._engine) as session:
+            async with session.begin():
+                # Delete old live chunks
+                chunk_result = await session.execute(
+                    text("""
+                        DELETE FROM chunks
+                        WHERE partition = 'live'
+                          AND created_at < NOW() - INTERVAL ':days days'
+                    """.replace(":days days", f"{older_than_days} days")),
+                )
+                deleted = chunk_result.rowcount or 0
+
+                # Delete orphaned live documents (no remaining chunks)
+                await session.execute(
+                    text("""
+                        DELETE FROM documents
+                        WHERE partition = 'live'
+                          AND fingerprint NOT IN (
+                              SELECT DISTINCT doc_fingerprint FROM chunks
+                          )
+                    """),
+                )
+
+        log.info("pgvector.prune_live.done", chunks_deleted=deleted)
+        return deleted
+
     async def get_chunk_count(self) -> int:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(text("SELECT COUNT(*) FROM chunks"))

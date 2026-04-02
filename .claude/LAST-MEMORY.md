@@ -1,114 +1,109 @@
 # Last Session Memory — F1 Chatbot
 
-**Last updated:** 2026-04-01
-**Session scope:** Phase 1 — Static KB Ingestion (complete)
+**Last updated:** 2026-04-02
+**Session scope:** Phase 2 — Live KB Ingestion (complete)
 
 ---
 
 ## Project Overview
 
-An F1 AI chatbot that answers questions about Formula 1 history (1950–2024) using
-a RAG (Retrieval-Augmented Generation) pipeline. Data is ingested from Jolpica
-API and Wikipedia, embedded with Ollama (`nomic-embed-text`), and stored in
-PostgreSQL with pgvector for vector similarity search.
+An F1 AI chatbot that answers questions about Formula 1 history (1950–2024) and
+the current live season, using a RAG (Retrieval-Augmented Generation) pipeline.
+Data is ingested from Jolpica API, Wikipedia, OpenF1 API, and Motorsport.com,
+embedded with Ollama (`nomic-embed-text`), and stored in PostgreSQL with pgvector
+for vector similarity search.
 
 **Three-phase plan:**
 - **Phase 1** (DONE): Static KB ingestion — Jolpica + Wikipedia
-- **Phase 2** (TODO): Live KB + scheduler — OpenF1 + News scraping
+- **Phase 2** (DONE): Live KB + scheduler — OpenF1 + News scraping
 - **Phase 3** (TODO): FastAPI RAG agent + query routing
 
 ---
 
-## What Was Done
+## What Was Done This Session
 
-### Phase 0 — Scaffold (pre-existing before this session)
+### README.md
 
-These files existed from the initial commit (`f98657a`):
+- Created comprehensive `README.md` with architecture diagram, full tech stack,
+  project structure, getting started guide, env var table, data sources detail,
+  ingestion pipeline breakdown, DB schema tables, and roadmap.
+- Fixed PostgreSQL port: `.env.example` had `POSTGRES_PORT=5432` / `DATABASE_URL`
+  pointing to 5432 — corrected to **5433** to match docker-compose port mapping.
+  README and `.env.example` were both updated.
 
-- `pyproject.toml` — 29 dependencies pinned (FastAPI, SQLAlchemy, pgvector, httpx, etc.), Python >=3.13
-- `docker-compose.yml` — PostgreSQL (pgvector:pg16) on port **5433**, Ollama on port 11434, both with healthchecks
-- `db/schema.sql` — Full schema for all 3 phases: `documents`, `chunks`, `sync_state`, `job_runs` tables; pgvector extension; IVFFlat + GIN indexes
-- `.env` / `.env.example` — All config vars (DB URL uses port 5433, chunk sizes 512/800, overlap 80, batch size 32)
-- Directory structure with empty `__init__.py` files for `ingestion/`, `agent/`, `api/`, `tests/`
-- `docs/PHASE_1.md`, `PHASE_2.md`, `PHASE_3.md` — Detailed implementation plans
-- `docs/PLAN.md`, `PREREQUISITES.md` — Architecture overview and setup checklist
+### Phase 2 — Live KB Ingestion (implemented this session)
 
-### Phase 1 — Static KB Ingestion (implemented this session)
-
-All 14 files below were created from scratch. **10 tests pass.**
-
-#### Core Layer (`ingestion/core/`)
+#### Files Created
 
 | File | What it does |
 |------|-------------|
-| `config.py` (33 lines) | `Settings` class via `pydantic-settings`, loads from `.env`. Singleton `settings` object imported everywhere. Keys: `database_url`, `ollama_base_url`, `embedding_model`, `user_agent` (required by Wikipedia API), `request_delay_seconds`, `max_retries`, `chunk_size_structured` (512), `chunk_size_narrative` (800), `chunk_overlap` (80), `embedding_batch_size` (32). |
-| `models.py` (75 lines) | 3 enums (`SourceType`, `ContentType`, `KBPartition`), 3 dataclasses (`RawDocument` with `xxhash` fingerprint property, `Chunk` with optional embedding, `IngestionResult` with stats + `summarise()`). |
-| `logging.py` (23 lines) | `structlog` config with ISO timestamps + console renderer. `setup_logging()` and `get_logger(name)`. |
+| `ingestion/extractors/openf1.py` (~230 lines) | `OpenF1Extractor(season, since)`. Fetches from `https://api.openf1.org/v1`. Endpoints: `/sessions`, `/drivers`, `/position`, `/stints`, `/pit`. Incremental sync via `since` datetime. Per-endpoint try/except so one failure doesn't abort the session. Tenacity retry (3 attempts). All docs use `partition=KBPartition.LIVE`. |
+| `ingestion/extractors/news.py` (~220 lines) | `NewsExtractor(max_articles, since, url_exists_fn)`. Scrapes `https://www.motorsport.com/f1/news/`. Two CSS selector patterns for article URLs (graceful fallback). 2s delay between articles. URL-based dedup via injected `url_exists_fn`. Fails gracefully (0 docs, not exception) on broken layout. Captures headline, published_at, author, tags, body. |
+| `ingestion/scheduler.py` (~240 lines) | `create_scheduler()` returns `AsyncIOScheduler` with `openf1_refresh` (interval=`live_refresh_interval_hours`, default 6h) and `news_scrape` (interval=`news_refresh_interval_hours`, default 3h). Both have `coalesce=True`, `max_instances=1`. Each job: reads `sync_state`, runs full extract→chunk→embed→load pipeline, updates `sync_state`, writes `job_runs` row. Standalone CLI: `python -m ingestion.scheduler`. |
+| `tests/test_scheduler.py` (7 tests) | Tests: job registration, max_instances, coalesce, interval config, job_run written on success (openf1 + news), job_run written with success=False on exception. Uses `unittest.mock` — no real DB or scheduler needed. |
 
-#### Extractors (`ingestion/extractors/`)
-
-| File | What it does |
-|------|-------------|
-| `base.py` (24 lines) | Abstract `BaseExtractor` — `extract() -> AsyncIterator[RawDocument]` + `health_check() -> bool`. |
-| `jolpica.py` (221 lines) | `JolpicaExtractor(start_year=1950, end_year=2024)`. Fetches from `https://api.jolpi.ca/ergast/f1`. Endpoints: `/drivers`, `/constructors`, `/{year}/results`, `/{year}/qualifying` (1994+), `/{year}/driverStandings`, `/{year}/constructorStandings`. Pagination via `_get_all_pages()` with `limit=100`. Rate limiting with `asyncio.sleep()`. Tenacity retry (3 attempts, exponential backoff). Each API response item becomes one `RawDocument` with JSON-serialized `raw_content`. |
-| `wikipedia.py` (220 lines) | `WikipediaExtractor()`. 58 predefined articles across 4 categories: 25 drivers, 10 constructors, 13 circuits, 10 topics. Fetches per-section (not whole articles) via Wikipedia API. Uses `User-Agent` header from `settings.user_agent` (Wikipedia returns 403 without it). `_clean_wikitext()` strips templates, unwraps links, removes refs/HTML. Skips boilerplate sections (References, See Also, etc.) and short sections (<50 chars). 0.2s delay between sections, `REQUEST_DELAY_SECONDS` between articles. |
-
-#### Transformer (`ingestion/transformers/`)
-
-| File | What it does |
-|------|-------------|
-| `chunker.py` (185 lines) | `Chunker` with `chunk(doc) -> list[Chunk]`. Jolpica docs: `_to_narrative()` converts JSON to prose, then `RecursiveCharacterTextSplitter(512, 80)`. Wikipedia docs: split directly with `RecursiveCharacterTextSplitter(800, 80)`. Five formatters: `_format_race_result`, `_format_qualifying`, `_format_driver`, `_format_constructor`, `_format_standings`. Chunk IDs: `{fingerprint}_{index}`. |
-
-#### Embedder (`ingestion/embedders/`)
-
-| File | What it does |
-|------|-------------|
-| `ollama.py` (64 lines) | `OllamaEmbedder`. Calls `POST {ollama_base_url}/api/embeddings` with `nomic-embed-text` (768-dim vectors). `embed_batch()` processes in groups of 32 using `asyncio.gather`. Tenacity retry. `health_check()` verifies model availability via `/api/tags`. |
-
-#### Loader (`ingestion/loaders/`)
-
-| File | What it does |
-|------|-------------|
-| `pgvector.py` (120 lines) | `PgVectorLoader`. SQLAlchemy async engine. `doc_exists(fingerprint)` for dedup check. `upsert(doc, chunks)` — inserts document + bulk-upserts chunks with `ON CONFLICT (chunk_id) DO UPDATE`. `rebuild_index()` drops and recreates IVFFlat index (`lists=100`, `vector_cosine_ops`). `get_chunk_count()` for final reporting. |
-
-#### Pipeline + Healthcheck
-
-| File | What it does |
-|------|-------------|
-| `pipeline.py` (102 lines) | `run_static(start_year, end_year)` — orchestrates extract→chunk→embed→load with tqdm progress bar, dedup short-circuit, index rebuild at end. CLI via `argparse`: `--phase static|live|all`, `--start-year`, `--end-year`. Entry: `uv run python -m ingestion.pipeline --phase static`. |
-| `healthcheck.py` (119 lines) | Pre-flight checks for PostgreSQL (connection + pgvector extension), Ollama (API + model), Jolpica API, Wikipedia API. Wikipedia check uses `User-Agent` header. Exits 0/1. Entry: `uv run python -m ingestion.healthcheck`. |
-
-#### Tests
-
-| File | What it does |
-|------|-------------|
-| `tests/conftest.py` (10 lines) | Auto-use fixture for `setup_logging()`. |
-| `tests/test_extractors.py` (181 lines) | 4 tests: Jolpica driver extraction with mocked HTTP (respx), fingerprint uniqueness, Wikipedia section extraction with mocked API, wikitext cleanup. |
-| `tests/test_pipeline.py` (141 lines) | 6 tests: Chunker for race results/drivers/wiki, chunk ID format, fingerprint idempotency, content-fingerprint divergence. |
-
-#### Modified Files
+#### Files Modified
 
 | File | Change |
 |------|--------|
-| `pyproject.toml` | Added `[tool.pytest.ini_options]` with `asyncio_mode = "auto"` |
+| `ingestion/core/config.py` | Added `live_refresh_interval_hours: int = 6` and `news_refresh_interval_hours: int = 3` |
+| `ingestion/loaders/pgvector.py` | Added `url_exists(url: str) -> bool` (checks `metadata->>'url'`) and `prune_live_partition(older_than_days=90) -> int` |
+| `ingestion/pipeline.py` | Added `run_live(since)` function; added `--phase live` and `--since YYYY-MM-DD` CLI flags; `--phase all` now runs both static and live |
+| `tests/test_extractors.py` | Added 6 new tests for OpenF1 (3) and News (3) extractors |
 
-#### Documentation Created
+#### Documentation Created / Updated
 
-| File | What it does |
-|------|-------------|
-| `docs/Phase-1-summary.md` | Comprehensive Phase 1 summary with architecture diagram, file details, data volume estimates, run instructions |
-| `explain/notes.md` | Beginner-friendly guide to the entire project for someone who has never worked with Python or built a service |
+| File | Change |
+|------|--------|
+| `docs/Phase-2-summary.md` | Full technical summary matching Phase-1-summary.md format |
+| `explain/notes.md` | Updated with Phase 2 — new extractors, scheduler section, updated project structure, updated tests section, Phase 2 glossary terms |
+| `README.md` | Created from scratch this session (see above) |
+
+---
+
+## Test Results
+
+**23 tests, all passing.**
+
+| File | Tests | Status |
+|------|------:|--------|
+| `tests/test_extractors.py` | 10 | ✅ All pass |
+| `tests/test_pipeline.py` | 6 | ✅ All pass |
+| `tests/test_scheduler.py` | 7 | ✅ All pass |
+
+Run: `/home/ruturaj-hp/.local/bin/uv sync --extra dev && /home/ruturaj-hp/.local/bin/uv run python -m pytest tests/ -v`
+
+---
+
+## Important Technical Notes
+
+- **Port:** PostgreSQL is on port **5433** (not default 5432) in docker-compose and `.env` `DATABASE_URL`. `.env.example` was incorrectly showing 5432 — fixed this session.
+- **Python version:** >=3.13 (pinned in pyproject.toml)
+- **Embedding dimensions:** 768 (nomic-embed-text) — must match `vector(768)` in schema
+- **Qualifying data:** Only available from 1994 onwards — Jolpica extractor skips earlier years
+- **Deduplication:**
+  - Static/structured data: fingerprint = `xxhash.xxh64` of `raw_content`
+  - News articles: URL stored in `metadata->>'url'`, checked via `loader.url_exists()`
+- **Index rebuild:** IVFFlat index is dropped and recreated after static ingestion only (not live runs)
+- **uv dev deps:** `uv sync` alone does NOT install pytest. Must use `uv sync --extra dev`
+- **Async generator mocking:** When mocking an async generator method in tests, use `MagicMock(side_effect=fn)` not `AsyncMock(return_value=...)`. AsyncMock wraps the result in a coroutine, which breaks `async for`.
+- **Dependencies:** All locked in `uv.lock`, install with `uv sync --extra dev`
+- **Wikipedia User-Agent:** Wikipedia API returns 403 without a proper `User-Agent` header. Value: `"F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"`
+
+---
+
+## Database Tables — All Four Now Active
+
+| Table | Used Since | Purpose |
+|-------|-----------|---------|
+| `documents` | Phase 1 | One row per raw document, dedup via fingerprint |
+| `chunks` | Phase 1 | Text chunks with 768-dim embeddings |
+| `sync_state` | Phase 2 | `last_synced_at` per source for incremental sync |
+| `job_runs` | Phase 2 | Audit log — one row per scheduler job execution |
 
 ---
 
 ## What Was NOT Done Yet
-
-### Phase 2 — Live KB + Scheduler
-- `ingestion/extractors/openf1.py` — OpenF1 API for live session data
-- `ingestion/extractors/news.py` — Motorsport.com scraper with URL-based dedup
-- `ingestion/scheduler.py` — APScheduler jobs for periodic refresh
-- `tests/test_scheduler.py`
-- Tables `sync_state` and `job_runs` exist in schema but no code uses them yet
 
 ### Phase 3 — FastAPI RAG Agent
 - `agent/retriever.py` — Hybrid search (pgvector + BM25 full-text via RRF)
@@ -122,21 +117,7 @@ All 14 files below were created from scratch. **10 tests pass.**
 - `api/routes/health.py` — GET /health
 - `Dockerfile`
 - `tests/test_agent.py`
-
----
-
-## Important Technical Notes
-
-- **Port:** PostgreSQL is on port **5433** (not default 5432) in docker-compose and .env `DATABASE_URL`
-- **Python version:** >=3.13 (pinned in pyproject.toml)
-- **Embedding dimensions:** 768 (nomic-embed-text) — must match `vector(768)` in schema
-- **Qualifying data:** Only available from 1994 onwards — extractor skips earlier years
-- **Deduplication:** Fingerprint = `xxhash.xxh64` of `raw_content`; checked before chunking/embedding to avoid wasted compute
-- **Index rebuild:** IVFFlat index is dropped and recreated after each full ingestion run
-- **Dependencies:** All locked in `uv.lock`, install with `uv sync`; dev deps via `uv sync --extra dev`
-- **Test framework:** pytest + pytest-asyncio (auto mode) + respx for HTTP mocking
-- **Wikipedia User-Agent:** Wikipedia API returns 403 without a proper `User-Agent` header. Added `user_agent` to `Settings` and used in `WikipediaExtractor` and `check_wikipedia()` healthcheck. Value: `"F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"`
-- **No code pushed yet** — all changes are local, uncommitted
+- Weekly `prune_live_partition()` scheduled job (wired into Phase 3 scheduler)
 
 ---
 
@@ -150,13 +131,20 @@ docker compose exec ollama ollama pull nomic-embed-text
 # Verify
 uv run python -m ingestion.healthcheck
 
-# Run ingestion (if not done yet)
+# Run static ingestion (if not done yet)
 uv run python -m ingestion.pipeline --phase static
 
-# Run tests
-uv run pytest tests/ -v
+# Run live ingestion
+uv run python -m ingestion.pipeline --phase live
 
-# Next: Start Phase 2 from docs/PHASE_2.md
+# Start background scheduler
+uv run python -m ingestion.scheduler
+
+# Run tests
+/home/ruturaj-hp/.local/bin/uv sync --extra dev
+/home/ruturaj-hp/.local/bin/uv run python -m pytest tests/ -v
+
+# Next: Start Phase 3 from docs/PHASE_3.md
 ```
 
 ---
@@ -164,7 +152,10 @@ uv run pytest tests/ -v
 ## Git State
 
 - **Branch:** `main`
-- **Last commit:** `f98657a chore: project scaffold, packages, docker, db schema, env`
-- **Uncommitted changes:** All Phase 1 implementation files (14 new Python files + 1 modified `pyproject.toml` + 2 docs files + 1 explain file + 1 `.claude/LAST-MEMORY.md`)
-- **Nothing has been committed or pushed for Phase 1 work**
-- **Second commit needed:** `be8acae feat: bootstrap the static knowledge base with all historical F1 data` already exists but only contains data files. All Phase 1 code is uncommitted.
+- **Recent commits:**
+  - `4db8c8d` chore: increase intervals between requests to avoid rate-limitation from Jolpica
+  - `6fe9a91` fix: add user-agent header for requests to wikipedia API
+  - `be8acae` feat: bootstrap the static knowledge base with all historical F1 data
+  - `f98657a` chore: project scaffold, packages, docker, db schema, env
+- **Uncommitted this session:** All Phase 2 files + README.md + docs/Phase-2-summary.md + explain/notes.md updates + .env.example port fix
+- **Nothing has been committed or pushed for Phase 2 work**
