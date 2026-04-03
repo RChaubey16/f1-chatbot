@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
@@ -68,7 +68,7 @@ class OpenF1Extractor(BaseExtractor):
                 return []
 
             if resp.status_code == 429:
-                retry_after = min(int(resp.headers.get("Retry-After", 15)), 60)
+                retry_after = int(resp.headers.get("Retry-After", 60))
                 log.warning(
                     "openf1.rate_limited",
                     url=url,
@@ -113,14 +113,16 @@ class OpenF1Extractor(BaseExtractor):
 
         await asyncio.sleep(settings.request_delay_seconds)
 
-        # Per-session detail data — limit to recent sessions to avoid hammering
-        # the API with hundreds of requests on a full run.
-        detail_cutoff = self.since or (
-            datetime.now(tz=timezone.utc) - timedelta(days=30)
-        )
+        # Per-session detail data — all sessions that have already occurred.
+        # The OpenF1 API returns the full season calendar including future sessions,
+        # so we exclude those. On incremental runs (since is set) we further limit
+        # to sessions newer than the last sync timestamp.
+        now = datetime.now(tz=timezone.utc)
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+        cutoff_str = self.since.strftime("%Y-%m-%dT%H:%M:%S") if self.since else ""
         recent_sessions = [
             s for s in sessions
-            if (s.get("date_start") or "") >= detail_cutoff.strftime("%Y-%m-%d")
+            if cutoff_str <= (s.get("date_start") or "") <= now_str
         ]
         log.info("openf1.detail_sessions", total=len(sessions), recent=len(recent_sessions))
 
