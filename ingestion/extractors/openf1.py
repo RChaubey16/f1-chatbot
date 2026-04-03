@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -68,7 +68,7 @@ class OpenF1Extractor(BaseExtractor):
                 return []
 
             if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", 15))
+                retry_after = min(int(resp.headers.get("Retry-After", 15)), 60)
                 log.warning(
                     "openf1.rate_limited",
                     url=url,
@@ -113,8 +113,18 @@ class OpenF1Extractor(BaseExtractor):
 
         await asyncio.sleep(settings.request_delay_seconds)
 
-        # Per-session detail data
-        for session in sessions:
+        # Per-session detail data — limit to recent sessions to avoid hammering
+        # the API with hundreds of requests on a full run.
+        detail_cutoff = self.since or (
+            datetime.now(tz=timezone.utc) - timedelta(days=30)
+        )
+        recent_sessions = [
+            s for s in sessions
+            if (s.get("date_start") or "") >= detail_cutoff.strftime("%Y-%m-%d")
+        ]
+        log.info("openf1.detail_sessions", total=len(sessions), recent=len(recent_sessions))
+
+        for session in recent_sessions:
             session_key = session.get("session_key")
             if not session_key:
                 continue
