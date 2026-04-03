@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text"
+    llm_model: str = "mistral"
 
     # HTTP
     user_agent: str = "F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"
