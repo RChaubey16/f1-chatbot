@@ -20,13 +20,19 @@ this is for you.
 10. [The Loader — How We Store Everything in the Database](#10-the-loader--how-we-store-everything-in-the-database)
 11. [The Pipeline — How Everything Runs Together](#11-the-pipeline--how-everything-runs-together)
 12. [The Scheduler — Keeping Live Data Fresh Automatically](#12-the-scheduler--keeping-live-data-fresh-automatically)
-13. [The Health Check — Making Sure Everything Is Online](#13-the-health-check--making-sure-everything-is-online)
-14. [The Tests — How We Verify Our Code Works](#14-the-tests--how-we-verify-our-code-works)
-15. [Docker — Running Services Without Installing Them](#15-docker--running-services-without-installing-them)
-16. [The Database Schema — How Data Is Organised on Disk](#16-the-database-schema--how-data-is-organised-on-disk)
-17. [Key Python Concepts Used in This Project](#17-key-python-concepts-used-in-this-project)
-18. [How to Run the Project](#18-how-to-run-the-project)
-19. [Glossary](#19-glossary)
+13. [The Prompts — How We Instruct the LLM](#13-the-prompts--how-we-instruct-the-llm)
+14. [The Router — Classifying Query Intent](#14-the-router--classifying-query-intent)
+15. [The Retriever — Hybrid Search and RRF](#15-the-retriever--hybrid-search-and-rrf)
+16. [The Tools — Structured Data Lookups](#16-the-tools--structured-data-lookups)
+17. [The Agent — The Reasoning Loop](#17-the-agent--the-reasoning-loop)
+18. [The FastAPI Layer — Serving the Chatbot](#18-the-fastapi-layer--serving-the-chatbot)
+19. [The Health Check — Making Sure Everything Is Online](#19-the-health-check--making-sure-everything-is-online)
+20. [The Tests — How We Verify Our Code Works](#20-the-tests--how-we-verify-our-code-works)
+21. [Docker — Running Services Without Installing Them](#21-docker--running-services-without-installing-them)
+22. [The Database Schema — How Data Is Organised on Disk](#22-the-database-schema--how-data-is-organised-on-disk)
+23. [Key Python Concepts Used in This Project](#23-key-python-concepts-used-in-this-project)
+24. [How to Run the Project](#24-how-to-run-the-project)
+25. [Glossary](#25-glossary)
 
 ---
 
@@ -42,15 +48,18 @@ For example:
 - "What happened in the last race weekend?"
 
 To answer these questions, the chatbot needs a **knowledge base** — a searchable
-store of F1 facts. We've built two layers so far:
+store of F1 facts. All three phases are now complete:
 
 - **Phase 1 (Static KB):** Historical data 1950–2024 — race results, qualifying,
   standings, driver/constructor profiles, Wikipedia articles.
 - **Phase 2 (Live KB):** Current-season data — live session results from the
   OpenF1 API and recent news from Motorsport.com, refreshed automatically on a
   schedule.
+- **Phase 3 (RAG Agent + API):** A FastAPI web service that accepts a question,
+  classifies its intent, retrieves grounded context via hybrid search, and streams
+  an answer from a local Ollama LLM (Mistral).
 
-Both phases follow the same four steps:
+Phases 1 and 2 follow the same four ingestion steps:
 
 1. **Fetching** data from external sources (APIs and web scraping)
 2. **Breaking** that data into small, digestible chunks
@@ -101,8 +110,9 @@ User asks: "Who won the 2019 Monaco Grand Prix?"
 ```
 
 **Phases 1 and 2 build the "RETRIEVE" part** — the searchable knowledge base,
-both historical and live. Phase 3 (not built yet) will add the "AUGMENT" and
-"GENERATE" parts.
+both historical and live. **Phase 3 adds the "AUGMENT" and "GENERATE" parts** —
+the router classifies the query, the retriever fetches relevant chunks, and
+Ollama (Mistral) streams the final answer.
 
 ---
 
@@ -150,8 +160,10 @@ one is and why we need it.
 | **tqdm** | Shows progress bars in the terminal | Pipeline — shows how many documents have been processed |
 | **beautifulsoup4** / **lxml** | Parses HTML | News extractor — extracts article body, headline, and date from Motorsport.com pages |
 | **apscheduler** | Runs jobs on a schedule | Scheduler — fires the OpenF1 refresh and news scrape jobs every few hours |
+| **fastapi** | Web framework for building APIs | `api/` — defines the `/chat` and `/health` HTTP endpoints |
+| **uvicorn** | ASGI web server | Runs the FastAPI app (like Apache/nginx but for async Python) |
 | **pytest** | Testing framework | Runs our test suite to verify code works |
-| **respx** | Mocks HTTP requests in tests | Tests — pretends to be the Jolpica/Wikipedia/OpenF1 API so tests don't need the internet |
+| **respx** | Mocks HTTP requests in tests | Tests — pretends to be the Jolpica/Wikipedia/OpenF1/Ollama API so tests don't need the internet |
 
 ---
 
@@ -202,15 +214,31 @@ f1-chatbot/
 │   ├── scheduler.py              # [Phase 2] APScheduler — auto-refreshes live data
 │   └── healthcheck.py            # Verifies all services are running
 │
-├── tests/                        # Automated tests (23 total)
+├── Dockerfile                    # [Phase 3] Builds the API container image
+│
+├── tests/                        # Automated tests (30 total)
 │   ├── __init__.py
 │   ├── conftest.py               # Shared test setup
-│   ├── test_extractors.py        # Tests for all four extractors
-│   ├── test_pipeline.py          # Tests for the chunker
-│   └── test_scheduler.py         # [Phase 2] Tests for scheduler jobs and registration
+│   ├── test_extractors.py        # Tests for all four extractors (10 tests)
+│   ├── test_pipeline.py          # Tests for the chunker (6 tests)
+│   ├── test_scheduler.py         # [Phase 2] Tests for scheduler jobs (7 tests)
+│   └── test_agent.py             # [Phase 3] Tests for router, retriever, agent (7 tests)
 │
-├── agent/                        # Phase 3 (empty — not built yet)
-├── api/                          # Phase 3 (empty — not built yet)
+├── agent/                        # *** PHASE 3 — The reasoning layer ***
+│   ├── __init__.py
+│   ├── prompts.py                # ROUTER_PROMPT and SYSTEM_PROMPT templates
+│   ├── router.py                 # Query intent classifier (HISTORICAL/CURRENT/MIXED)
+│   ├── retriever.py              # Hybrid dense + sparse search with RRF merge
+│   ├── tools.py                  # Structured lookups: standings, race results, driver stats
+│   └── agent.py                  # Core reasoning loop — routes, retrieves, streams
+│
+├── api/                          # *** PHASE 3 — The web service ***
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI app with lifespan + scheduler integration
+│   ├── schemas.py                # ChatRequest / ChatResponse Pydantic models
+│   └── routes/
+│       ├── chat.py               # POST /chat + GET /chat/stream (SSE)
+│       └── health.py             # GET /health — infra status check
 │
 ├── docs/                         # Planning and summary documents
 │   ├── PLAN.md
@@ -218,7 +246,8 @@ f1-chatbot/
 │   ├── PHASE_2.md
 │   ├── PHASE_3.md
 │   ├── Phase-1-summary.md        # Detailed technical summary — Phase 1
-│   └── Phase-2-summary.md        # Detailed technical summary — Phase 2
+│   ├── Phase-2-summary.md        # Detailed technical summary — Phase 2
+│   └── Phase-3-summary.md        # Detailed technical summary — Phase 3
 │
 └── explain/
     └── notes.md                  # This file!
@@ -258,6 +287,7 @@ DATABASE_URL=postgresql+asyncpg://f1:f1secret@localhost:5433/f1kb
 # Ollama
 OLLAMA_BASE_URL=http://localhost:11434
 EMBEDDING_MODEL=nomic-embed-text
+LLM_MODEL=mistral
 
 # Ingestion tuning
 CHUNK_SIZE_STRUCTURED=512
@@ -973,12 +1003,392 @@ try again at the next scheduled interval.
 uv run python -m ingestion.scheduler
 ```
 
-In Phase 3, the scheduler will start automatically when the FastAPI web server
-starts, rather than needing to be launched separately.
+In Phase 3 the scheduler starts automatically inside the FastAPI web server's
+lifespan — you no longer need to launch it separately. Running
+`docker compose up` brings up postgres, ollama, and the API (which includes the
+scheduler) all at once.
 
 ---
 
-## 13. The Health Check — Making Sure Everything Is Online
+## 13. The Prompts — How We Instruct the LLM
+
+**File:** `agent/prompts.py`
+
+Before the LLM can do anything useful, we need to tell it exactly what to do
+and in what format. We have two prompt templates.
+
+### `ROUTER_PROMPT` — Classify the Question
+
+```
+You are a query classifier for an F1 chatbot.
+Classify the user's question into exactly one of these categories:
+  HISTORICAL — questions about past seasons, races, drivers, or records
+  CURRENT    — questions about live standings, latest race, or current season
+  MIXED      — questions that need both historical and current information
+
+Reply with one word only: HISTORICAL, CURRENT, or MIXED.
+
+Question: {query}
+```
+
+**Why a one-word reply?** The router parses the LLM's response as an enum
+value. A single word is unambiguous and trivial to parse — no risk of the LLM
+burying the answer in a sentence.
+
+### `SYSTEM_PROMPT` — Answer Grounded in Facts
+
+```
+You are an expert Formula 1 analyst. Answer the user's question using only
+the context provided below. Cite your sources. If the context does not contain
+enough information, say so — do not make up facts.
+
+Context:
+{context}
+```
+
+The `{context}` placeholder is filled at runtime with the retrieved chunks
+(and/or tool results). This is the "AUGMENT" step of RAG — the LLM only sees
+the facts we explicitly give it, preventing hallucination.
+
+---
+
+## 14. The Router — Classifying Query Intent
+
+**File:** `agent/router.py`
+
+Before retrieving anything, the agent needs to know *what kind* of question is
+being asked — because different questions need different data sources.
+
+### The Three Intent Classes
+
+| Intent | Example questions | What happens next |
+|--------|------------------|-------------------|
+| `HISTORICAL` | "Who won the 1988 championship?" | Hybrid RAG over the **static** partition only |
+| `CURRENT` | "What are the standings today?" | **Tool call** — no RAG retrieval |
+| `MIXED` | "How does Hamilton compare to Schumacher?" | RAG over **both** partitions + tool call |
+
+### How Classification Works
+
+```
+User question
+      │
+      ▼
+POST http://localhost:11434/api/generate
+{
+  "model": "mistral",
+  "prompt": ROUTER_PROMPT.format(query=question),
+  "stream": false
+}
+      │
+      ▼
+Response: {"response": "HISTORICAL", "done": true}
+      │
+      ▼
+Intent.HISTORICAL
+```
+
+The router strips whitespace, uppercases the response, and maps it to the
+`Intent` enum. **If the LLM returns anything unexpected** (e.g., `"I think
+it's HISTORICAL"` or an HTTP error), the router defaults to `Intent.MIXED` —
+the safest fallback because MIXED retrieves from both partitions.
+
+### Key Implementation Details
+
+- Uses `httpx.AsyncClient` (same as the extractors — consistent HTTP layer)
+- `health_check()` verifies the `llm_model` is present in Ollama's model list
+- Supports `async with Router() as r:` so the HTTP client is properly closed
+
+---
+
+## 15. The Retriever — Hybrid Search and RRF
+
+**File:** `agent/retriever.py`
+
+For `HISTORICAL` and `MIXED` queries, the retriever finds the most relevant
+chunks from the knowledge base. It combines **two different search signals**
+and merges them with **Reciprocal Rank Fusion (RRF)**.
+
+### Why Two Search Signals?
+
+Neither search method is perfect on its own:
+
+| Method | Strength | Weakness |
+|--------|---------|---------|
+| **Dense** (pgvector cosine) | Finds semantically similar text — "Who won Monaco?" matches "Lewis Hamilton was victorious at Monte Carlo" | Can miss exact keywords if the embedding space doesn't cluster them |
+| **Sparse** (PostgreSQL full-text) | Finds exact keywords reliably — driver names, circuit names, years | Can't understand synonyms or paraphrased questions |
+
+Combining both catches what either alone would miss.
+
+### Dense Retrieval (Vector Search)
+
+```sql
+SELECT chunk_id, content, source, content_type, partition, metadata,
+       1 - (embedding <=> :emb::vector) AS similarity
+FROM chunks
+WHERE partition = ANY(:parts) AND embedding IS NOT NULL
+ORDER BY embedding <=> :emb::vector
+LIMIT :lim
+```
+
+The `<=>` operator (provided by pgvector) computes **cosine distance** between
+the query embedding and each stored chunk embedding. Lower distance = more
+similar.
+
+### Sparse Retrieval (Full-Text Search)
+
+```sql
+SELECT chunk_id, content, source, content_type, partition, metadata,
+       ts_rank(content_tsv, plainto_tsquery('english', :q)) AS rank
+FROM chunks
+WHERE content_tsv @@ plainto_tsquery('english', :q)
+  AND partition = ANY(:parts)
+ORDER BY rank DESC
+LIMIT :lim
+```
+
+`content_tsv` is a `TSVECTOR` column automatically generated from the chunk's
+text. `plainto_tsquery` converts the user's question to a keyword search query.
+
+### RRF Merge — Combining the Two Result Lists
+
+Reciprocal Rank Fusion is a simple but effective algorithm for merging
+ranked lists. For each chunk that appears in either result list:
+
+```python
+score[chunk_id] += 1 / (k + rank + 1)   # k=60 (dampening constant)
+```
+
+A chunk ranked 1st gets score `1/61 ≈ 0.016`. A chunk ranked 10th gets
+`1/71 ≈ 0.014`. A chunk that appears in **both** lists gets two additive
+score contributions — so chunks that score well on both signals rise to the top.
+
+The merged list is sorted by RRF score and truncated to `top_k` (default 6).
+
+```
+Dense results:     [A, B, C, D, E, F]
+Sparse results:    [C, A, G, H, I, J]
+
+After RRF:
+  A: 1/61 + 1/62 = 0.032   (ranked 1st in both)
+  C: 1/63 + 1/61 = 0.032   (3rd dense, 1st sparse)
+  B: 1/62           = 0.016  (only in dense)
+  G: 1/63           = 0.016  (only in sparse)
+  ...
+```
+
+---
+
+## 16. The Tools — Structured Data Lookups
+
+**File:** `agent/tools.py`
+
+For `CURRENT` and `MIXED` queries, vector search over narrative text is not
+enough — we need precise, up-to-date structured data. The tools module provides
+three async functions that bypass the retriever entirely.
+
+### `get_current_standings() -> str`
+
+```
+GET https://api.openf1.org/v1/position?session_key=latest
+```
+
+Returns the current race position for every driver:
+
+```
+1. Driver #44 — P1
+2. Driver #1 — P2
+3. Driver #16 — P3
+...
+```
+
+Falls back to `"Current standings unavailable."` if the API is unreachable.
+
+### `get_race_results(year: int, gp: str) -> str`
+
+```
+GET https://api.jolpi.ca/ergast/f1/{year}/results.json?limit=100
+```
+
+Filters races where `gp` (e.g., `"monaco"`) appears in the race name, circuit
+ID, or locality. Returns the top 3 finishers:
+
+```
+Results for 2019 Monaco:
+1. Hamilton (Mercedes)
+2. Bottas (Mercedes)
+3. Verstappen (Red Bull)
+```
+
+### `get_driver_stats(driver_name: str) -> str`
+
+```sql
+SELECT content FROM chunks
+WHERE content_type = 'driver_profile'
+  AND metadata->>'name' ILIKE '%hamilton%'
+LIMIT 1
+```
+
+Returns the full driver profile text chunk already stored in the knowledge base
+from Phase 1 ingestion. Falls back gracefully if no match is found.
+
+---
+
+## 17. The Agent — The Reasoning Loop
+
+**File:** `agent/agent.py`
+
+The `Agent` class orchestrates everything: it receives a question, decides how
+to answer it, gathers the relevant information, and streams the response.
+
+### The `_prepare_context` Step (shared by both endpoints)
+
+```
+1. Router.classify(query)             → Intent (HISTORICAL / CURRENT / MIXED)
+2. Retriever.retrieve(query, parts)   → list[RetrievedChunk]  (if not CURRENT)
+3. get_current_standings()            → standings string       (if CURRENT or MIXED)
+4. Build context string               → truncated to 12,000 chars
+```
+
+The context string assembles the retrieved chunks and/or standings into a
+single block of text that gets injected into `SYSTEM_PROMPT`.
+
+### `async run(query)` — Streaming Mode
+
+```
+SYSTEM_PROMPT.format(context=context_str)
+      │
+      ▼
+POST http://localhost:11434/api/generate
+{"model": "mistral", "prompt": "...", "stream": true}
+      │
+      ▼
+for each line in response stream:
+    parse JSON → yield token string
+    stop when "done": true
+```
+
+This is how `GET /chat/stream` works — each token from the LLM is yielded
+immediately, so the browser starts rendering the answer before the LLM is done
+generating it.
+
+### `async run_sync(query)` — Non-Streaming Mode
+
+Calls `_prepare_context`, then collects all streamed tokens into a single
+string. Returns a structured dict:
+
+```python
+{
+    "answer": "Lewis Hamilton won the 2019 Monaco Grand Prix...",
+    "sources": [{"content_type": "race_result", "source": "jolpica", ...}],
+    "intent": "HISTORICAL",
+    "latency_ms": 2340.5
+}
+```
+
+### Resource Management
+
+Both the `Router` (an HTTP client to Ollama) and `Retriever` (a database
+connection pool) hold open connections. `Agent.close()` properly shuts both
+down. The FastAPI lifespan calls `close()` on shutdown so no connections leak.
+
+---
+
+## 18. The FastAPI Layer — Serving the Chatbot
+
+**Files:** `api/main.py`, `api/schemas.py`, `api/routes/chat.py`,
+`api/routes/health.py`
+
+### What Is FastAPI?
+
+**FastAPI** is a Python web framework for building HTTP APIs. It handles:
+- Routing (which function to call for `POST /chat`)
+- Request parsing (reading the JSON body)
+- Response serialisation (converting Python dicts to JSON)
+- Validation (rejecting badly-formed requests before they reach your code)
+
+It's async-native, which means it plays nicely with our async agent and
+retriever code.
+
+### The Endpoints
+
+#### `POST /chat` — Full answer as JSON
+
+```
+Request body:
+{
+  "query": "Who won the 1988 championship?",
+  "max_chunks": 6
+}
+
+Response:
+{
+  "answer": "Ayrton Senna won the 1988 Formula One World Championship...",
+  "sources": [{"content_type": "standings", "source": "jolpica", ...}],
+  "intent": "HISTORICAL",
+  "latency_ms": 3210.4
+}
+```
+
+#### `GET /chat/stream?query=...` — Server-Sent Events (SSE)
+
+```
+Response headers: Content-Type: text/event-stream
+
+data: {"token": "Ayrton"}
+data: {"token": " Senna"}
+data: {"token": " won"}
+...
+data: [DONE]
+```
+
+**What are Server-Sent Events?** SSE is a browser standard for receiving a
+stream of events from a server over a single HTTP connection. Unlike WebSockets,
+it's one-directional (server → client), which is all we need for a chatbot
+response. The browser receives tokens one at a time and can display them as they
+arrive, giving the "typing" effect.
+
+#### `GET /health` — Infrastructure Status
+
+```json
+{
+  "status": "ok",
+  "postgres": "ok",
+  "ollama": "ok",
+  "chunks_static": 9800,
+  "chunks_live": 1200,
+  "last_live_refresh": "2024-03-25T10:00:00Z"
+}
+```
+
+Checks postgres (runs a `SELECT COUNT(*)`), checks ollama (calls the embedder's
+`health_check()`), and reads `sync_state` for the last live refresh timestamp.
+**Never raises HTTP 500** — infra failures show as `"error"` in their field so
+the response always arrives and is parseable.
+
+### The Lifespan — Startup and Shutdown
+
+FastAPI's `lifespan` context manager replaces the old `on_event("startup")`
+pattern. It runs setup code before the server starts accepting requests, and
+teardown code after the last request is served:
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.agent = Agent()       # create agent (opens DB pool + HTTP client)
+    scheduler = create_scheduler()
+    scheduler.start()               # start background scheduler
+    app.state.scheduler = scheduler
+    yield                           # server runs here
+    scheduler.shutdown(wait=False)  # stop scheduler on shutdown
+    await app.state.agent.close()   # close DB pool + HTTP client
+```
+
+The agent is stored on `app.state` so the same instance (and its connection
+pool) is reused across all requests — no reconnection overhead per request.
+
+---
+
+## 19. The Health Check — Making Sure Everything Is Online
 
 **File:** `ingestion/healthcheck.py`
 
@@ -1006,7 +1416,7 @@ uv run python -m ingestion.healthcheck
 
 ---
 
-## 14. The Tests — How We Verify Our Code Works
+## 20. The Tests — How We Verify Our Code Works
 
 ### What Is Automated Testing?
 
@@ -1019,7 +1429,7 @@ will catch it.
 
 **Run with:** `uv run python -m pytest tests/ -v`
 
-We have **23 tests** across three files, all passing.
+We have **30 tests** across four files, all passing.
 
 #### `tests/test_extractors.py` — 10 Tests
 
@@ -1097,6 +1507,22 @@ components with fake versions:
 | `test_run_news_scrape_writes_job_run` | Same for the news job |
 | `test_run_openf1_refresh_records_failure` | When DB throws an error, job writes `success=False` and records the error |
 
+#### `tests/test_agent.py` — 7 Tests (Phase 3)
+
+These test the router, retriever RRF logic, and agent intent routing **without
+starting Ollama or PostgreSQL**. HTTP calls are intercepted by `respx`; DB calls
+are patched with `unittest.mock`.
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_retriever_rrf_merge` | Chunks appearing in both dense and sparse results get higher RRF scores than single-list chunks |
+| `test_router_classifies_historical` | Mocked Ollama returns `"HISTORICAL"` → `Intent.HISTORICAL` |
+| `test_router_classifies_current` | Mocked Ollama returns `"CURRENT"` → `Intent.CURRENT` |
+| `test_router_defaults_to_mixed_on_unknown` | Mocked Ollama returns `"BLAH"` → falls back to `Intent.MIXED` |
+| `test_agent_historical_uses_static_partition` | `HISTORICAL` intent → retriever called with `partitions=["static"]` |
+| `test_agent_current_skips_retriever` | `CURRENT` intent → retriever never called; `get_current_standings` awaited |
+| `test_agent_mixed_uses_both_partitions` | `MIXED` intent → retriever called with `partitions=["static", "live"]` |
+
 #### `tests/conftest.py` — Shared Setup
 
 Automatically initialises structured logging before every test. `conftest.py` is
@@ -1104,7 +1530,7 @@ a special pytest file — fixtures defined here are available to all test files.
 
 ---
 
-## 15. Docker — Running Services Without Installing Them
+## 21. Docker — Running Services Without Installing Them
 
 ### What Is Docker?
 
@@ -1134,7 +1560,35 @@ services:
       - "11434:11434"                 # Access on port 11434
     volumes:
       - ollama_models:/root/.ollama   # Persist downloaded AI models
+
+  api:
+    build: .                          # Builds from the Dockerfile in the project root
+    env_file: .env
+    ports:
+      - "8000:8000"                   # FastAPI available at http://localhost:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
+
+### The `Dockerfile`
+
+```dockerfile
+FROM python:3.13-slim
+WORKDIR /app
+RUN pip install uv
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen          # installs exact locked dependencies
+COPY . .
+CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+`python:3.13-slim` matches `requires-python = ">=3.13"` in `pyproject.toml`.
+`uv sync --frozen` uses the lock file exactly — no version drift between
+environments.
 
 **Key commands:**
 ```bash
@@ -1151,7 +1605,7 @@ uses 5432, but Docker maps it to 5433 on your host.
 
 ---
 
-## 16. The Database Schema — How Data Is Organised on Disk
+## 22. The Database Schema — How Data Is Organised on Disk
 
 **File:** `db/schema.sql`
 
@@ -1214,7 +1668,7 @@ CREATE INDEX chunks_content_tsv_idx ON chunks USING gin(content_tsv);
 
 ---
 
-## 17. Key Python Concepts Used in This Project
+## 23. Key Python Concepts Used in This Project
 
 ### `async` / `await` — Doing Things Concurrently
 
@@ -1289,7 +1743,7 @@ immediately.
 
 ---
 
-## 18. How to Run the Project
+## 24. How to Run the Project
 
 ### First-Time Setup
 
@@ -1301,11 +1755,12 @@ cd f1-chatbot
 # 2. Install Python dependencies
 uv sync --extra dev
 
-# 3. Start Docker services (PostgreSQL + Ollama)
+# 3. Start Docker services (PostgreSQL + Ollama + API)
 docker compose up -d
 
-# 4. Download the embedding AI model (one-time, ~270 MB)
-docker compose exec ollama ollama pull nomic-embed-text
+# 4. Download the AI models (one-time)
+docker compose exec ollama ollama pull nomic-embed-text   # ~270 MB — embeddings
+docker compose exec ollama ollama pull mistral            # ~4 GB  — chat LLM
 
 # 5. Verify everything is working
 uv run python -m ingestion.healthcheck
@@ -1327,29 +1782,46 @@ uv run python -m ingestion.pipeline --phase live
 uv run python -m ingestion.pipeline --phase live --since 2024-01-01
 ```
 
-### Running the Scheduler
+### Running the API Server (Phase 3)
 
 ```bash
-# Starts the background scheduler — runs forever until Ctrl+C
-uv run python -m ingestion.scheduler
+# Option A: via Docker Compose (recommended — postgres + ollama + api together)
+docker compose up -d
+
+# Option B: locally (useful during development)
+uv run uvicorn api.main:app --reload
+
+# Check it's running
+curl http://localhost:8000/health
+
+# Ask a question (non-streaming)
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Who won the 1988 championship?"}'
+
+# Ask a question (streaming SSE)
+curl -N "http://localhost:8000/chat/stream?query=What+are+the+current+standings"
 ```
+
+The API starts the background scheduler automatically — no need to run
+`ingestion.scheduler` separately.
 
 ### Running Tests
 
 ```bash
-# Run all 23 tests with verbose output
+# Run all 30 tests with verbose output
 uv run python -m pytest tests/ -v
 ```
 
 ### Stopping Everything
 
 ```bash
-docker compose down   # Stops PostgreSQL and Ollama
+docker compose down   # Stops PostgreSQL, Ollama, and the API
 ```
 
 ---
 
-## 19. Glossary
+## 25. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -1391,3 +1863,17 @@ docker compose down   # Stops PostgreSQL and Ollama
 | **Virtual Environment** | An isolated Python installation for a project, preventing library conflicts. |
 | **Wikitext** | Wikipedia's markup language, which includes templates, links, and refs that we clean before storing. |
 | **yield** | A Python keyword that produces values one at a time from a generator function, instead of returning all at once. |
+| **Agent** | The core reasoning loop (Phase 3). Orchestrates routing, retrieval, tool calls, and LLM streaming. |
+| **Dense retrieval** | Vector similarity search — finds chunks whose embedding is geometrically close to the query embedding. |
+| **FastAPI** | A Python web framework for building async HTTP APIs with automatic request validation. |
+| **Intent** | The classified purpose of a user's question: `HISTORICAL`, `CURRENT`, or `MIXED`. |
+| **Lifespan** | FastAPI's startup/shutdown hook — runs setup before the server starts and teardown after it stops. |
+| **Mistral** | An open-source LLM run locally via Ollama. Used by the agent to generate answers (Phase 3). |
+| **RRF (Reciprocal Rank Fusion)** | An algorithm that merges two ranked result lists by summing `1/(k+rank)` scores. Rewards chunks that rank well on both signals. |
+| **Router** | The component that classifies a user's question into an intent class before any retrieval happens. |
+| **Retriever** | The component that fetches the most relevant knowledge-base chunks for a given query using hybrid search. |
+| **SSE (Server-Sent Events)** | A browser standard for receiving a stream of events over a single HTTP connection. Used by `GET /chat/stream`. |
+| **Sparse retrieval** | Full-text keyword search — finds chunks that contain the exact words from the query. |
+| **Streaming** | Yielding LLM tokens to the client as they are generated, rather than waiting for the full answer. |
+| **System prompt** | Instructions given to the LLM at the start of a conversation. Our `SYSTEM_PROMPT` tells the LLM to answer only from the provided context. |
+| **uvicorn** | An ASGI web server that runs the FastAPI application. |

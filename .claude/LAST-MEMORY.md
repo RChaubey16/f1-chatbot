@@ -1,7 +1,7 @@
 # Last Session Memory — F1 Chatbot
 
-**Last updated:** 2026-04-02
-**Session scope:** Phase 2 — Live KB Ingestion (complete)
+**Last updated:** 2026-04-04
+**Session scope:** Phase 3 — FastAPI RAG Agent (complete)
 
 ---
 
@@ -16,57 +16,108 @@ for vector similarity search.
 **Three-phase plan:**
 - **Phase 1** (DONE): Static KB ingestion — Jolpica + Wikipedia
 - **Phase 2** (DONE): Live KB + scheduler — OpenF1 + News scraping
-- **Phase 3** (TODO): FastAPI RAG agent + query routing
+- **Phase 3** (DONE): FastAPI RAG agent + query routing
+
+**All three phases are complete and committed on `feature/phase-3`.**
 
 ---
 
-## What Was Done This Session
+## Phase 3 — What Was Built
 
-### README.md
+### Architecture
 
-- Created comprehensive `README.md` with architecture diagram, full tech stack,
-  project structure, getting started guide, env var table, data sources detail,
-  ingestion pipeline breakdown, DB schema tables, and roadmap.
-- Fixed PostgreSQL port: `.env.example` had `POSTGRES_PORT=5432` / `DATABASE_URL`
-  pointing to 5432 — corrected to **5433** to match docker-compose port mapping.
-  README and `.env.example` were both updated.
+```
+User question
+     │
+     ▼
+┌─────────────────────────────────┐
+│   FastAPI  POST /chat           │
+│           GET  /chat/stream     │
+│           GET  /health          │
+└──────────────┬──────────────────┘
+               │
+               ▼
+      ┌─────────────────┐
+      │     Router      │  Classifies intent via Ollama LLM
+      └────────┬────────┘
+               │
+     ┌─────────┼──────────────┐
+     │         │              │
+HISTORICAL   MIXED        CURRENT
+     │         │              │
+     ▼         ▼              │
+┌──────────────────┐          │
+│    Retriever     │          │
+│  Hybrid search   │          │
+│  pgvector dense  │          │
+│  + pg full-text  │          │
+│  merged via RRF  │          │
+└────────┬─────────┘          │
+         │         ┌──────────▼──────────┐
+         │         │  Tools              │
+         │         │  get_current_       │
+         │         │  standings()        │
+         │         └──────────┬──────────┘
+         └─────────┬──────────┘
+                   │ context string
+                   ▼
+         ┌─────────────────────┐
+         │   Ollama LLM        │
+         │   (mistral)         │
+         │   SYSTEM_PROMPT     │
+         │   + context         │
+         └─────────┬───────────┘
+                   │ streamed tokens
+                   ▼
+         ┌─────────────────────┐
+         │  StreamingResponse  │
+         │  (SSE)  or          │
+         │  ChatResponse JSON  │
+         └─────────────────────┘
+```
 
-### Phase 2 — Live KB Ingestion (implemented this session)
+### Files Created
 
-#### Files Created
+#### Agent Layer — `agent/`
 
-| File | What it does |
-|------|-------------|
-| `ingestion/extractors/openf1.py` (~230 lines) | `OpenF1Extractor(season, since)`. Fetches from `https://api.openf1.org/v1`. Endpoints: `/sessions`, `/drivers`, `/position`, `/stints`, `/pit`. Incremental sync via `since` datetime. Per-endpoint try/except so one failure doesn't abort the session. Tenacity retry (3 attempts). All docs use `partition=KBPartition.LIVE`. |
-| `ingestion/extractors/news.py` (~220 lines) | `NewsExtractor(max_articles, since, url_exists_fn)`. Scrapes `https://www.motorsport.com/f1/news/`. Two CSS selector patterns for article URLs (graceful fallback). 2s delay between articles. URL-based dedup via injected `url_exists_fn`. Fails gracefully (0 docs, not exception) on broken layout. Captures headline, published_at, author, tags, body. |
-| `ingestion/scheduler.py` (~240 lines) | `create_scheduler()` returns `AsyncIOScheduler` with `openf1_refresh` (interval=`live_refresh_interval_hours`, default 6h) and `news_scrape` (interval=`news_refresh_interval_hours`, default 3h). Both have `coalesce=True`, `max_instances=1`. Each job: reads `sync_state`, runs full extract→chunk→embed→load pipeline, updates `sync_state`, writes `job_runs` row. Standalone CLI: `python -m ingestion.scheduler`. |
-| `tests/test_scheduler.py` (7 tests) | Tests: job registration, max_instances, coalesce, interval config, job_run written on success (openf1 + news), job_run written with success=False on exception. Uses `unittest.mock` — no real DB or scheduler needed. |
+| File | Purpose |
+|------|---------|
+| `agent/prompts.py` | `ROUTER_PROMPT` and `SYSTEM_PROMPT` templates |
+| `agent/router.py` | Query intent classifier (HISTORICAL/CURRENT/MIXED) via Ollama LLM |
+| `agent/retriever.py` | Hybrid dense (pgvector) + sparse (pg full-text) retriever with RRF merge |
+| `agent/tools.py` | 3 structured lookup tools for live/structured data |
+| `agent/agent.py` | Core reasoning loop — routes, retrieves, streams |
 
-#### Files Modified
+#### API Layer — `api/`
 
-| File | Change |
-|------|--------|
-| `ingestion/core/config.py` | Added `live_refresh_interval_hours: int = 6` and `news_refresh_interval_hours: int = 3` |
-| `ingestion/loaders/pgvector.py` | Added `url_exists(url: str) -> bool` (checks `metadata->>'url'`) and `prune_live_partition(older_than_days=90) -> int` |
-| `ingestion/pipeline.py` | Added `run_live(since)` function; added `--phase live` and `--since YYYY-MM-DD` CLI flags; `--phase all` now runs both static and live |
-| `tests/test_extractors.py` | Added 6 new tests for OpenF1 (3) and News (3) extractors |
+| File | Purpose |
+|------|---------|
+| `api/main.py` | FastAPI app, lifespan, CORS |
+| `api/schemas.py` | `ChatRequest` / `ChatResponse` Pydantic models |
+| `api/routes/chat.py` | `POST /chat` (JSON) + `GET /chat/stream` (SSE) |
+| `api/routes/health.py` | `GET /health` |
 
-#### Documentation Created / Updated
+#### Tests — `tests/test_agent.py` (7 tests)
 
-| File | Change |
-|------|--------|
-| `docs/Phase-2-summary.md` | Full technical summary matching Phase-1-summary.md format |
-| `explain/notes.md` | Updated with Phase 2 — new extractors, scheduler section, updated project structure, updated tests section, Phase 2 glossary terms |
-| `README.md` | Created from scratch this session (see above) |
+| Test | What it covers |
+|------|---------------|
+| `test_retriever_rrf_merge` | RRF score merging logic |
+| `test_router_classifies_historical` | Router returns HISTORICAL intent |
+| `test_router_classifies_current` | Router returns CURRENT intent |
+| `test_router_defaults_to_mixed_on_unknown` | Router falls back to MIXED |
+| `test_agent_historical_uses_static_partition` | Agent queries static KB only |
+| `test_agent_current_skips_retriever` | Agent uses tools, skips RAG retriever |
+| `test_agent_mixed_uses_both_partitions` | Agent uses both retriever + tools |
 
 ---
 
 ## Test Results
 
-**23 tests, all passing.**
+**30 tests, all passing.**
 
 | File | Tests | Status |
 |------|------:|--------|
+| `tests/test_agent.py` | 7 | ✅ All pass |
 | `tests/test_extractors.py` | 10 | ✅ All pass |
 | `tests/test_pipeline.py` | 6 | ✅ All pass |
 | `tests/test_scheduler.py` | 7 | ✅ All pass |
@@ -77,22 +128,24 @@ Run: `/home/ruturaj-hp/.local/bin/uv sync --extra dev && /home/ruturaj-hp/.local
 
 ## Important Technical Notes
 
-- **Port:** PostgreSQL is on port **5433** (not default 5432) in docker-compose and `.env` `DATABASE_URL`. `.env.example` was incorrectly showing 5432 — fixed this session.
+- **Port:** PostgreSQL is on port **5433** (not default 5432) in docker-compose and `.env` `DATABASE_URL`
 - **Python version:** >=3.13 (pinned in pyproject.toml)
 - **Embedding dimensions:** 768 (nomic-embed-text) — must match `vector(768)` in schema
+- **LLM for chat:** `mistral` via Ollama
+- **LLM for routing:** same Ollama instance, `ROUTER_PROMPT` elicits one-word response
 - **Qualifying data:** Only available from 1994 onwards — Jolpica extractor skips earlier years
 - **Deduplication:**
   - Static/structured data: fingerprint = `xxhash.xxh64` of `raw_content`
   - News articles: URL stored in `metadata->>'url'`, checked via `loader.url_exists()`
 - **Index rebuild:** IVFFlat index is dropped and recreated after static ingestion only (not live runs)
 - **uv dev deps:** `uv sync` alone does NOT install pytest. Must use `uv sync --extra dev`
-- **Async generator mocking:** When mocking an async generator method in tests, use `MagicMock(side_effect=fn)` not `AsyncMock(return_value=...)`. AsyncMock wraps the result in a coroutine, which breaks `async for`.
+- **Async generator mocking:** Use `MagicMock(side_effect=fn)` not `AsyncMock(return_value=...)` for async generators
+- **Wikipedia User-Agent:** Wikipedia API returns 403 without a proper `User-Agent` header
 - **Dependencies:** All locked in `uv.lock`, install with `uv sync --extra dev`
-- **Wikipedia User-Agent:** Wikipedia API returns 403 without a proper `User-Agent` header. Value: `"F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"`
 
 ---
 
-## Database Tables — All Four Now Active
+## Database Tables
 
 | Table | Used Since | Purpose |
 |-------|-----------|---------|
@@ -103,21 +156,16 @@ Run: `/home/ruturaj-hp/.local/bin/uv sync --extra dev && /home/ruturaj-hp/.local
 
 ---
 
-## What Was NOT Done Yet
+## Git State
 
-### Phase 3 — FastAPI RAG Agent
-- `agent/retriever.py` — Hybrid search (pgvector + BM25 full-text via RRF)
-- `agent/router.py` — Query intent classification (HISTORICAL/CURRENT/MIXED)
-- `agent/tools.py` — Structured tools (standings, results lookup)
-- `agent/agent.py` — Core reasoning loop
-- `agent/prompts.py` — System prompts
-- `api/main.py` — FastAPI app
-- `api/schemas.py` — Request/response models
-- `api/routes/chat.py` — POST /chat + GET /chat/stream
-- `api/routes/health.py` — GET /health
-- `Dockerfile`
-- `tests/test_agent.py`
-- Weekly `prune_live_partition()` scheduled job (wired into Phase 3 scheduler)
+- **Branch:** `feature/phase-3`
+- **Worktree:** `/home/ruturaj-hp/projects/f1-chatbot/.worktrees/phase-3`
+- **Recent commits:**
+  - `f7945b4` docs: add Phase-3-summary.md
+  - `c93618e` feat: phase 3 — FastAPI RAG agent with hybrid search and streaming
+  - `f6a3476` feat: add phase 3 stubs and worktree gitignore
+  - `886a5c4` chore: update sessions count to match the on-going season
+  - `d5e0e21` chore: increase intervals between API calls to OpenF1 to avoid rate limits
 
 ---
 
@@ -127,35 +175,31 @@ Run: `/home/ruturaj-hp/.local/bin/uv sync --extra dev && /home/ruturaj-hp/.local
 # Start services
 docker compose up -d
 docker compose exec ollama ollama pull nomic-embed-text
+docker compose exec ollama ollama pull mistral
 
 # Verify
 uv run python -m ingestion.healthcheck
 
-# Run static ingestion (if not done yet)
+# Run ingestion (if not done yet)
 uv run python -m ingestion.pipeline --phase static
-
-# Run live ingestion
 uv run python -m ingestion.pipeline --phase live
 
 # Start background scheduler
 uv run python -m ingestion.scheduler
 
+# Start the API server
+uv run uvicorn api.main:app --reload
+
 # Run tests
 /home/ruturaj-hp/.local/bin/uv sync --extra dev
 /home/ruturaj-hp/.local/bin/uv run python -m pytest tests/ -v
-
-# Next: Start Phase 3 from docs/PHASE_3.md
 ```
 
 ---
 
-## Git State
+## What Remains (Optional / Future)
 
-- **Branch:** `main`
-- **Recent commits:**
-  - `4db8c8d` chore: increase intervals between requests to avoid rate-limitation from Jolpica
-  - `6fe9a91` fix: add user-agent header for requests to wikipedia API
-  - `be8acae` feat: bootstrap the static knowledge base with all historical F1 data
-  - `f98657a` chore: project scaffold, packages, docker, db schema, env
-- **Uncommitted this session:** All Phase 2 files + README.md + docs/Phase-2-summary.md + explain/notes.md updates + .env.example port fix
-- **Nothing has been committed or pushed for Phase 2 work**
+- Weekly `prune_live_partition()` job wired into scheduler
+- `Dockerfile` for containerised API deployment
+- Frontend / chat UI
+- Merge `feature/phase-3` into `main`
