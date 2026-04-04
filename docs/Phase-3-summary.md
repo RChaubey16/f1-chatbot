@@ -4,9 +4,13 @@
 
 Phase 3 builds the reasoning layer on top of the knowledge base: a FastAPI
 service that accepts a user question, classifies its intent, retrieves grounded
-context via hybrid search, and streams an answer from a local Ollama LLM.
+context via hybrid search, and streams an answer from Gemini 2.5 Flash.
 Phase 1 and 2 components (retriever, scheduler, embedder, loader) are reused
 without modification.
+
+**LLM split:** Ollama runs inside Docker for embeddings only
+(`nomic-embed-text`). All LLM inference (routing + answer generation) uses the
+Gemini API so responses are fast (~5s) regardless of local hardware.
 
 ---
 
@@ -24,7 +28,7 @@ User question
                │
                ▼
       ┌─────────────────┐
-      │     Router      │  Classifies intent via Ollama LLM
+      │     Router      │  Classifies intent via Gemini API
       └────────┬────────┘
                │
      ┌─────────┼──────────────┐
@@ -50,12 +54,12 @@ HISTORICAL   MIXED        CURRENT
                    │ context string
                    ▼
          ┌─────────────────────┐
-         │   Ollama LLM        │
-         │   (mistral)         │
-         │   SYSTEM_PROMPT     │
-         │   + context         │
+         │   Gemini 2.5 Flash  │
+         │   (Google API)      │
+         │   SYSTEM_INSTRUCTION│
+         │   + ANSWER_PROMPT   │
          └─────────┬───────────┘
-                   │ streamed tokens
+                   │ streamed tokens (SSE)
                    ▼
          ┌─────────────────────┐
          │  StreamingResponse  │
@@ -70,64 +74,73 @@ HISTORICAL   MIXED        CURRENT
 
 ### Agent Layer — `agent/`
 
-| File | Lines | Purpose |
-|------|------:|---------|
-| `prompts.py` | ~24 | `ROUTER_PROMPT` and `SYSTEM_PROMPT` templates |
-| `router.py` | ~80 | Query intent classifier via Ollama LLM |
-| `retriever.py` | ~149 | Hybrid dense + sparse retriever with RRF merge |
-| `tools.py` | ~90 | 3 structured lookup tools for live/structured data |
-| `agent.py` | ~185 | Core reasoning loop — routes, retrieves, streams |
+| File | Purpose |
+|------|---------|
+| `prompts.py` | `ROUTER_SYSTEM`, `ROUTER_PROMPT`, `SYSTEM_INSTRUCTION`, `ANSWER_PROMPT` |
+| `router.py` | Query intent classifier via Gemini API |
+| `retriever.py` | Hybrid dense + sparse retriever with RRF merge |
+| `tools.py` | 3 structured lookup tools for live/structured data |
+| `agent.py` | Core reasoning loop — routes, retrieves, streams |
+| `llm.py` | Thin Gemini API client (generate + SSE stream, retry on 429) |
+
+#### `agent/llm.py`
+
+Wraps the Gemini REST API using `httpx` (no extra SDK dependency).
+
+```python
+async def generate(system: str, prompt: str) -> str: ...
+async def stream(system: str, prompt: str) -> AsyncGenerator[str, None]: ...
+```
+
+- `generate` — single blocking call, used by the router for classification
+- `stream` — SSE streaming via `streamGenerateContent?alt=sse`, used by the agent for answer generation
+- Both functions retry up to 3 times with exponential backoff (5s → 10s → 20s) on HTTP 429 rate-limit responses
+- URL built from `settings.gemini_model` and `settings.gemini_api_key`
 
 #### `agent/prompts.py`
 
-Two prompt templates used across the agent:
+Four constants used across the agent:
 
-- **`ROUTER_PROMPT`** — instructs the LLM to classify a query into exactly one
-  of `HISTORICAL`, `CURRENT`, or `MIXED`. One-word response only.
-- **`SYSTEM_PROMPT`** — instructs the LLM to answer using only the provided
-  context and cite sources. Has a `{context}` placeholder filled at runtime.
+- **`ROUTER_SYSTEM`** — system instruction telling Gemini to respond with exactly one word
+- **`ROUTER_PROMPT`** — user turn with the query and classification rules; includes the current year (2026) so past seasons are correctly classified as HISTORICAL
+- **`SYSTEM_INSTRUCTION`** — system instruction for answer generation: use only the provided context, be concise, cite sources
+- **`ANSWER_PROMPT`** — user turn with `{question}` and `{context}` placeholders; question is placed before context so the model knows what to look for
+
+Placeholders are filled with `.replace("{key}", value)` (not `str.format()`) to prevent `KeyError` if chunk content contains `{...}`.
 
 #### `agent/router.py`
 
-`Router` classifies the user's query intent before retrieval so the agent uses
-the most appropriate data source.
+`Router` classifies the user's query intent before retrieval.
 
 **Three intent classes:**
 
 | Class | Examples | Strategy |
 |---|---|---|
 | `HISTORICAL` | "Who won the 1988 championship?" | Hybrid RAG over static KB only |
-| `CURRENT` | "What are the standings today?" | Live API tool call |
+| `CURRENT` | "What are the 2026 standings?" | Live API tool call only |
 | `MIXED` | "How does Hamilton compare to Schumacher?" | RAG over both partitions + standings |
 
 **Classification approach:**
-- POSTs to Ollama `/api/generate` with `stream: false`
-- Uses `settings.llm_model` (default: `mistral`)
-- Parses the `response` field, uppercases, maps to `Intent` enum
-- Defaults to `Intent.MIXED` on any unexpected value or HTTP error
-- Logs a warning and returns `MIXED` on empty LLM response
-
-**Key implementation details:**
-- Empty-response guard before `Intent(raw)` to avoid misleading `ValueError`
-- Exception catch narrowed to `(ValueError, httpx.HTTPError)` — does not swallow
-  programming errors
-- `health_check()` verifies `llm_model` is present in Ollama's model list
-- Supports `async with Router() as r:` via `__aenter__`/`__aexit__`
+- Calls `agent.llm.generate(ROUTER_SYSTEM, ROUTER_PROMPT)` via Gemini
+- Strips punctuation from the first word of the response, uppercases, maps to `Intent` enum
+- Defaults to `Intent.MIXED` on any unexpected value or exception (never crashes the request)
 
 #### `agent/retriever.py`
 
-`Retriever` combines two search signals and merges them via Reciprocal Rank
-Fusion (RRF).
+`Retriever` combines two search signals and merges them via Reciprocal Rank Fusion (RRF).
 
 **Dense retrieval (pgvector cosine similarity):**
 ```sql
 SELECT chunk_id, content, source, content_type, partition, metadata,
-       1 - (embedding <=> :emb::vector) AS similarity
+       1 - (embedding <=> CAST(:emb AS vector)) AS similarity
 FROM chunks
 WHERE partition = ANY(:parts) AND embedding IS NOT NULL
-ORDER BY embedding <=> :emb::vector
+ORDER BY embedding <=> CAST(:emb AS vector)
 LIMIT :lim
 ```
+Note: `CAST(:emb AS vector)` is used instead of `:emb::vector` to avoid a
+PostgreSQL syntax error caused by asyncpg interpreting `::` as part of the
+named parameter.
 
 **Sparse retrieval (PostgreSQL full-text):**
 ```sql
@@ -147,19 +160,9 @@ score[chunk_id] += 1 / (k + rank + 1)   # k=60
 Chunks appearing in both lists get additive score boosts. The merged, sorted list
 is truncated to `top_k` (default 6).
 
-**Interface:**
-```python
-async def retrieve(
-    query: str,
-    partitions: list[str] = ["static", "live"],
-    top_k: int = 6,
-) -> list[RetrievedChunk]
-```
-
 #### `agent/tools.py`
 
-Three async functions the agent calls for structured lookups, bypassing vector
-search entirely:
+Three async functions for structured lookups, bypassing vector search entirely:
 
 **`get_current_standings() -> str`**
 - GETs `https://api.openf1.org/v1/position?session_key=latest`
@@ -168,29 +171,19 @@ search entirely:
 
 **`get_race_results(year: int, gp: str) -> str`**
 - GETs `https://api.jolpi.ca/ergast/f1/{year}/results.json?limit=100`
-- Filters races where `gp` (lowercased) appears in race name, circuit ID, or locality
-- Returns top-3 finishers: `"Results for 2019 Monaco:\n1. Hamilton (Mercedes)\n..."`
-- Graceful fallback on HTTP error or no match
+- Filters races where `gp` appears in race name, circuit ID, or locality
+- Returns top-3 finishers; graceful fallback on error or no match
 
 **`get_driver_stats(driver_name: str) -> str`**
-```sql
-SELECT content FROM chunks
-WHERE content_type = 'driver_profile'
-  AND metadata->>'name' ILIKE '%{driver_name}%'
-LIMIT 1
-```
-- Returns the full driver profile text chunk
-- Graceful fallback: `"No stats found for {driver_name}."`
-- Creates and disposes engine within the function call
+- Queries `chunks` table for `content_type = 'driver_profile'` matching the name
+- Returns the full driver profile text chunk; graceful fallback if not found
 
 #### `agent/agent.py`
 
-`Agent` is the core reasoning loop. It orchestrates routing, retrieval, tool
-calls, prompt construction, and LLM streaming.
+`Agent` orchestrates routing, retrieval, tool calls, and LLM streaming via Gemini.
 
 **`_prepare_context(query, top_k=6) -> (Intent, list[RetrievedChunk], str)`**
 
-Shared by both `run()` and `run_sync()`:
 1. Classifies intent via `Router.classify(query)`
 2. Retrieves chunks based on intent:
    - `HISTORICAL` → `partitions=["static"]`
@@ -198,62 +191,33 @@ Shared by both `run()` and `run_sync()`:
    - `CURRENT` → no retrieval
 3. Calls `get_current_standings()` for `CURRENT` or `MIXED` intent
 4. Builds context string, truncated to `_MAX_CONTEXT_CHARS = 12_000` characters
-5. Returns `(intent, chunks, context_str)`
 
 **`async run(query) -> AsyncGenerator[str, None]`** (streaming)
 
-Builds the prompt from `SYSTEM_PROMPT.format(context=context_str)` then streams
-from Ollama `/api/generate` with `"stream": true`. Yields each `response` token
-until `"done": true`. Skips empty lines and handles malformed JSON gracefully.
+Builds prompt, calls `gemini.stream(SYSTEM_INSTRUCTION, prompt)`, yields tokens.
 
 **`async run_sync(query, max_chunks=6) -> dict`**
 
-Calls `_prepare_context(query, top_k=max_chunks)` then collects the full
-streamed answer. Returns:
+Collects the full streamed answer and returns:
 ```python
 {
     "answer": str,
     "sources": [{"content_type": ..., "source": ..., "metadata": ...}],
-    "intent": str,       # Intent.value
-    "latency_ms": float  # end-to-end wall time
+    "intent": str,
+    "latency_ms": float
 }
 ```
-
-**Resource management:**
-- `close()` awaits `router.close()` and `retriever.close()`
-- `__aenter__`/`__aexit__` for `async with Agent() as agent:` usage
 
 ---
 
 ### API Layer — `api/`
 
-| File | Lines | Purpose |
-|------|------:|---------|
-| `schemas.py` | ~20 | Pydantic request/response models |
-| `routes/chat.py` | ~35 | POST /chat + GET /chat/stream endpoints |
-| `routes/health.py` | ~75 | GET /health — infra status check |
-| `main.py` | ~45 | FastAPI app with lifespan + scheduler integration |
-
-#### `api/schemas.py`
-
-Pydantic v2 models:
-
-```python
-class ChatRequest(BaseModel):
-    query: str
-    max_chunks: int = 6
-
-class Source(BaseModel):
-    content_type: str
-    source: str
-    metadata: dict
-
-class ChatResponse(BaseModel):
-    answer: str
-    sources: list[Source]
-    intent: str
-    latency_ms: float
-```
+| File | Purpose |
+|------|---------|
+| `schemas.py` | Pydantic request/response models |
+| `routes/chat.py` | POST /chat + GET /chat/stream endpoints |
+| `routes/health.py` | GET /health — infra status check |
+| `main.py` | FastAPI app with lifespan + scheduler integration |
 
 #### `api/routes/chat.py`
 
@@ -262,18 +226,16 @@ class ChatResponse(BaseModel):
 Body:     { "query": "...", "max_chunks": 6 }
 Response: { "answer": "...", "sources": [...], "intent": "HISTORICAL", "latency_ms": 1234.5 }
 ```
-Calls `agent.run_sync(body.query, max_chunks=body.max_chunks)`.
-Agent is read from `request.app.state.agent` — no per-request instantiation.
+Wrapped in try/except — exceptions surface as `{"detail": "..."}` with HTTP 500
+rather than a generic "Internal Server Error" with no body.
 
 **`GET /chat/stream?query=...`**
 ```
 Response: text/event-stream
-data: {"token": "Lewis"}
-data: {"token": " Hamilton"}
+data: {"token": "Max"}
+data: {"token": " Verstappen"}
 data: [DONE]
 ```
-Returns `StreamingResponse` wrapping an async generator that iterates
-`agent.run(query)` and yields SSE-formatted events.
 
 #### `api/routes/health.py`
 
@@ -283,41 +245,13 @@ Returns `StreamingResponse` wrapping an async generator that iterates
   "status": "ok",
   "postgres": "ok",
   "ollama": "ok",
-  "chunks_static": 9800,
-  "chunks_live": 1200,
-  "last_live_refresh": "2024-03-25T10:00:00Z"
+  "chunks_static": 15745,
+  "chunks_live": 1847,
+  "last_live_refresh": null
 }
 ```
-
-- **postgres**: runs `SELECT COUNT(*) FROM chunks WHERE partition=...` for both
-  partitions. Engine is created per-request and disposed in a `finally` block to
-  prevent connection pool leaks even when SQL queries raise.
-- **ollama**: calls `OllamaEmbedder().health_check()`, client closed in `finally`.
-- **last_live_refresh**: queries `sync_state WHERE source='openf1'`.
-- **status**: `"ok"` only if both postgres and ollama are `"ok"`.
-- Never raises HTTP 500 — all infra failures return `"error"` in their field.
-
-#### `api/main.py`
-
-FastAPI app using the modern `lifespan` context manager (not deprecated
-`on_event` hooks):
-
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.agent = Agent()
-    scheduler = create_scheduler()
-    scheduler.start()
-    app.state.scheduler = scheduler
-    yield
-    try:
-        app.state.scheduler.shutdown(wait=False)
-    except Exception:
-        log.warning("Scheduler was not running on shutdown")
-    await app.state.agent.close()
-```
-
-Includes both routers: `chat_router.router` and `health_router.router`.
+Checks postgres (chunk counts) and Ollama (embedding model health). Note: health
+does not check the Gemini API — Gemini errors surface at query time with a 500.
 
 ---
 
@@ -328,30 +262,39 @@ Includes both routers: `chat_router.router` and `health_router.router`.
 ```dockerfile
 FROM python:3.13-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen
+RUN uv sync --frozen --no-install-project
 COPY . .
+RUN uv sync --frozen
 CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-Uses `python:3.13-slim` to match `requires-python = ">=3.13"` in `pyproject.toml`.
+Key decisions:
+- `gcc` + `python3-dev` required: `aiohttp` has no pre-built wheel for `linux/aarch64` + Python 3.13 and must compile from source
+- Two-stage `uv sync`: first stage installs dependencies (layer cached), second stage (after `COPY . .`) installs the project itself so `hatchling` can find `README.md`
 
-#### `docker-compose.yml` — api service added
+#### `docker-compose.yml`
 
 ```yaml
-api:
-  build: .
-  env_file: .env
-  ports:
-    - "8000:8000"
-  depends_on:
-    postgres:
-      condition: service_healthy
-    ollama:
-      condition: service_healthy
-  command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
+services:
+  postgres:   # pgvector/pgvector:pg16, port 5433
+  ollama:     # ollama/ollama:latest, port 11434 — embeddings only
+  api:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://f1:f1secret@postgres:5432/f1kb
+      OLLAMA_BASE_URL: http://ollama:11434
+      # GEMINI_API_KEY and GEMINI_MODEL come from .env via env_file
 ```
+
+The `environment` block overrides the `localhost`-based URLs in `.env` with
+Docker service hostnames. Without this the API container cannot reach postgres
+or Ollama (localhost inside a container refers to the container itself).
+
+Ollama healthcheck uses `["CMD", "ollama", "list"]` — the `ollama/ollama` image
+does not include `curl`.
 
 ---
 
@@ -359,107 +302,113 @@ api:
 
 ### `ingestion/core/config.py`
 
-Added one new setting:
+Replaced `llm_model` with Gemini settings:
 
 ```python
-# Agent LLM (Phase 3)
-llm_model: str = "mistral"
+# Gemini (LLM inference)
+gemini_api_key: str = ""
+gemini_model: str = "gemini-2.5-flash"
 ```
 
-Used by `Router` and `Agent` for Ollama chat generation. Configurable via `LLM_MODEL` env var.
+`GEMINI_API_KEY` and `GEMINI_MODEL` env vars are picked up automatically via
+pydantic-settings.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | `""` | Google AI Studio API key (required) |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama for embeddings |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | Postgres connection string |
+
+Get a free Gemini API key at https://aistudio.google.com/apikey.
 
 ---
 
 ## Tests
 
-| File | Tests added | Total tests |
-|------|------------:|------------:|
-| `tests/test_agent.py` | +6 | 7 |
-| **Cumulative total** | | **30** |
+| File | Tests | Status |
+|------|------:|--------|
+| `tests/test_agent.py` | 11 | ✅ All pass |
+| `tests/test_api.py` | 8 | ✅ All pass |
+| `tests/test_tools.py` | 9 | ✅ All pass |
+| `tests/test_extractors.py` | 10 | ✅ All pass |
+| `tests/test_pipeline.py` | 6 | ✅ All pass |
+| `tests/test_scheduler.py` | 7 | ✅ All pass |
+| **Total** | **51** | ✅ All pass |
 
 ### Agent tests (`test_agent.py`)
 
-**Pre-existing (from stubs):**
-- **`test_retriever_rrf_merge`** — pure Python, no I/O. Verifies chunks
-  appearing in both dense and sparse results get higher RRF scores than
-  single-list chunks.
+- **RRF tests (4)** — pure Python, no I/O: merge, empty dense, empty sparse, both empty
+- **Router tests (4)** — mock `agent.router.gemini.generate`: HISTORICAL, CURRENT, unknown label → MIXED, exception → MIXED
+- **Agent intent routing tests (3)** — mock `agent.agent.gemini.stream`: static-only retrieval, CURRENT skips retriever, MIXED uses both partitions
 
-**Router tests (3 new):**
-- **`test_router_classifies_historical`** — mocks Ollama via `respx` to return
-  `"HISTORICAL"`; asserts `classify()` returns `Intent.HISTORICAL`
-- **`test_router_classifies_current`** — mocks return `"CURRENT"`
-- **`test_router_defaults_to_mixed_on_unknown`** — mocks return `"BLAH"`;
-  asserts fallback to `Intent.MIXED`
+### API tests (`test_api.py`)
 
-**Agent intent routing tests (3 new):**
-- **`test_agent_historical_uses_static_partition`** — mocks `router.classify`
-  to return `HISTORICAL` and patches `httpx.AsyncClient` for Ollama streaming;
-  asserts `retriever.retrieve` was called with `partitions=["static"]`
-- **`test_agent_current_skips_retriever`** — mocks `CURRENT` intent; asserts
-  `retriever.retrieve` was never called and `get_current_standings` was awaited
-- **`test_agent_mixed_uses_both_partitions`** — mocks `MIXED` intent; asserts
-  `retriever.retrieve` called with `partitions=["static", "live"]`
+FastAPI routes tested via `httpx.AsyncClient` with `ASGITransport`. Agent set
+directly on `app.state.agent` (lifespan not triggered by ASGITransport).
 
-**All 30 tests pass.**
+- POST /chat: happy path, max_chunks passthrough, default max_chunks, missing query → 422
+- GET /chat/stream: SSE format, missing query → 422
+- GET /health: postgres+ollama ok; postgres error → `status: error`
 
----
+### Tools tests (`test_tools.py`)
 
-## Database Tables Used (Phase 3)
-
-No new tables. Phase 3 reads from all four existing tables:
-
-| Table | Phase 3 usage |
-|-------|--------------|
-| `chunks` | Dense + sparse search via `Retriever`; chunk counts in `/health` |
-| `documents` | Indirectly via chunk metadata |
-| `sync_state` | `last_live_refresh` timestamp read by `/health` |
-| `job_runs` | No direct usage (written by Phase 2 scheduler, still running) |
-
----
-
-## Performance Targets
-
-| Metric | Target |
-|---|---|
-| Non-streaming response | < 5s end-to-end |
-| First token (streaming) | < 2s |
-| Vector search (top-6) | < 200ms |
-| Router classification | < 1s |
-
-Local Ollama on CPU is the bottleneck for generation. Use `mistral:7b-instruct-q4_K_M`
-(quantised) for faster CPU inference if latency is too high.
+`get_current_standings` and `get_race_results` tested with `respx` mocks:
+success, empty data, HTTP error, network error, malformed response, match by name/locality.
 
 ---
 
 ## How to Run
 
 ```bash
-# 1. Start all services (postgres + ollama + api)
+# 1. Add your Gemini API key to .env
+echo "GEMINI_API_KEY=your_key_here" >> .env
+
+# 2. Start all services
 docker compose up -d
 
-# 2. Pull models (first time only)
+# 3. Pull Ollama embedding model (first time only)
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose exec ollama ollama pull mistral
 
-# 3. Run ingestion (if not done yet)
+# 4. Run ingestion (if not done yet)
 uv run python -m ingestion.pipeline --phase static
 uv run python -m ingestion.pipeline --phase live
 
-# 4. Check health
+# 5. Check health
 curl http://localhost:8000/health
 
-# 5. Non-streaming query
+# 6. Non-streaming query
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"query": "Who won the 1988 championship?"}'
+  -d '{"query": "Who won the 2024 championship?"}'
 
-# 6. Streaming query
+# 7. Streaming query
 curl -N "http://localhost:8000/chat/stream?query=What+are+the+current+standings"
 
-# 7. Run tests
+# 8. Run tests
 uv sync --extra dev
 uv run python -m pytest tests/ -v
 ```
+
+---
+
+## Performance
+
+| Metric | Observed |
+|---|---|
+| End-to-end (POST /chat) | ~5s |
+| Router classification | ~1s |
+| Vector search (top-6) | < 200ms |
+| Gemini generation | ~3–4s |
+
+Gemini 2.5 Flash free tier: 10 requests/min, 500 requests/day. The client
+retries automatically on 429 with exponential backoff (5s → 10s → 20s, max 3
+attempts).
 
 ---
 
@@ -471,4 +420,4 @@ uv run python -m pytest tests/ -v
 - [x] `POST /chat` with a current-standings query routes to live tool (not RAG)
 - [x] `GET /chat/stream` streams SSE tokens correctly
 - [x] Router correctly classifies HISTORICAL / CURRENT / MIXED
-- [x] All 30 tests pass (30 total: 7 agent + 10 extractor + 6 pipeline + 7 scheduler)
+- [x] All 51 tests pass

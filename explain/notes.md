@@ -20,19 +20,20 @@ this is for you.
 10. [The Loader — How We Store Everything in the Database](#10-the-loader--how-we-store-everything-in-the-database)
 11. [The Pipeline — How Everything Runs Together](#11-the-pipeline--how-everything-runs-together)
 12. [The Scheduler — Keeping Live Data Fresh Automatically](#12-the-scheduler--keeping-live-data-fresh-automatically)
-13. [The Prompts — How We Instruct the LLM](#13-the-prompts--how-we-instruct-the-llm)
-14. [The Router — Classifying Query Intent](#14-the-router--classifying-query-intent)
-15. [The Retriever — Hybrid Search and RRF](#15-the-retriever--hybrid-search-and-rrf)
-16. [The Tools — Structured Data Lookups](#16-the-tools--structured-data-lookups)
-17. [The Agent — The Reasoning Loop](#17-the-agent--the-reasoning-loop)
-18. [The FastAPI Layer — Serving the Chatbot](#18-the-fastapi-layer--serving-the-chatbot)
-19. [The Health Check — Making Sure Everything Is Online](#19-the-health-check--making-sure-everything-is-online)
-20. [The Tests — How We Verify Our Code Works](#20-the-tests--how-we-verify-our-code-works)
-21. [Docker — Running Services Without Installing Them](#21-docker--running-services-without-installing-them)
-22. [The Database Schema — How Data Is Organised on Disk](#22-the-database-schema--how-data-is-organised-on-disk)
-23. [Key Python Concepts Used in This Project](#23-key-python-concepts-used-in-this-project)
-24. [How to Run the Project](#24-how-to-run-the-project)
-25. [Glossary](#25-glossary)
+13. [The Gemini LLM Client](#13-the-gemini-llm-client)
+14. [The Prompts — How We Instruct the LLM](#14-the-prompts--how-we-instruct-the-llm)
+15. [The Router — Classifying Query Intent](#15-the-router--classifying-query-intent)
+16. [The Retriever — Hybrid Search and RRF](#16-the-retriever--hybrid-search-and-rrf)
+17. [The Tools — Structured Data Lookups](#17-the-tools--structured-data-lookups)
+18. [The Agent — The Reasoning Loop](#18-the-agent--the-reasoning-loop)
+19. [The FastAPI Layer — Serving the Chatbot](#19-the-fastapi-layer--serving-the-chatbot)
+20. [The Health Check — Making Sure Everything Is Online](#20-the-health-check--making-sure-everything-is-online)
+21. [The Tests — How We Verify Our Code Works](#21-the-tests--how-we-verify-our-code-works)
+22. [Docker — Running Services Without Installing Them](#22-docker--running-services-without-installing-them)
+23. [The Database Schema — How Data Is Organised on Disk](#23-the-database-schema--how-data-is-organised-on-disk)
+24. [Key Python Concepts Used in This Project](#24-key-python-concepts-used-in-this-project)
+25. [How to Run the Project](#25-how-to-run-the-project)
+26. [Glossary](#26-glossary)
 
 ---
 
@@ -57,7 +58,7 @@ store of F1 facts. All three phases are now complete:
   schedule.
 - **Phase 3 (RAG Agent + API):** A FastAPI web service that accepts a question,
   classifies its intent, retrieves grounded context via hybrid search, and streams
-  an answer from a local Ollama LLM (Mistral).
+  an answer from Gemini 2.5 Flash (Google's free-tier cloud API).
 
 Phases 1 and 2 follow the same four ingestion steps:
 
@@ -112,7 +113,7 @@ User asks: "Who won the 2019 Monaco Grand Prix?"
 **Phases 1 and 2 build the "RETRIEVE" part** — the searchable knowledge base,
 both historical and live. **Phase 3 adds the "AUGMENT" and "GENERATE" parts** —
 the router classifies the query, the retriever fetches relevant chunks, and
-Ollama (Mistral) streams the final answer.
+Gemini 2.5 Flash streams the final answer.
 
 ---
 
@@ -140,17 +141,18 @@ one is and why we need it.
 | Tool | What It Is | Why We Use It |
 |------|-----------|---------------|
 | **Docker** | Runs software in isolated containers | We don't install PostgreSQL or Ollama directly — Docker runs them for us in little virtual boxes. |
-| **docker-compose.yml** | A recipe file for Docker | Tells Docker: "start a PostgreSQL database and an Ollama AI server, with these settings." |
+| **docker-compose.yml** | A recipe file for Docker | Tells Docker: "start a PostgreSQL database, an Ollama embedder, and the API server, with these settings." |
 | **PostgreSQL** | A relational database (stores structured data in tables) | Stores our F1 knowledge — documents and their chunks. |
 | **pgvector** | A PostgreSQL add-on for vector search | Lets PostgreSQL search by *meaning*, not just exact text matches. |
-| **Ollama** | Runs AI models locally on your machine | Converts text into vectors (embeddings) without sending data to the cloud. Free and private. |
+| **Ollama** | Runs AI models locally inside Docker | Used **only for embeddings** (`nomic-embed-text`). Converts text into 768-dimensional vectors. All chat/reasoning uses Gemini instead. |
+| **Gemini 2.5 Flash** | Google's cloud LLM (free tier) | Used for **all LLM inference** — routing queries and generating answers. Free tier: 10 requests/min, 500 requests/day. |
 
 ### Python Libraries (Code Others Wrote That We Reuse)
 
 | Library | What It Does | Where We Use It |
 |---------|-------------|-----------------|
 | **pydantic** / **pydantic-settings** | Validates data and loads config from `.env` files | `config.py` — loads settings like database URL, chunk sizes |
-| **httpx** | Makes HTTP requests (like a browser, but in code) | Extractors — calls the Jolpica API and Wikipedia API |
+| **httpx** | Makes HTTP requests (like a browser, but in code) | Extractors — calls the Jolpica/Wikipedia/OpenF1 APIs; `agent/llm.py` — calls the Gemini REST API |
 | **tenacity** | Retries failed operations automatically | Extractors + embedder — if an API call fails, try again up to 3 times |
 | **xxhash** | Generates fast fingerprints (hashes) of text | Models — creates a unique ID for each document's content for deduplication |
 | **langchain-text-splitters** | Splits long text into smaller overlapping chunks | Chunker — breaks documents into pieces that fit the AI's context window |
@@ -216,21 +218,24 @@ f1-chatbot/
 │
 ├── Dockerfile                    # [Phase 3] Builds the API container image
 │
-├── tests/                        # Automated tests (30 total)
+├── tests/                        # Automated tests (51 total)
 │   ├── __init__.py
 │   ├── conftest.py               # Shared test setup
 │   ├── test_extractors.py        # Tests for all four extractors (10 tests)
 │   ├── test_pipeline.py          # Tests for the chunker (6 tests)
 │   ├── test_scheduler.py         # [Phase 2] Tests for scheduler jobs (7 tests)
-│   └── test_agent.py             # [Phase 3] Tests for router, retriever, agent (7 tests)
+│   ├── test_agent.py             # [Phase 3] Tests for router, retriever, agent (11 tests)
+│   ├── test_api.py               # [Phase 3] Tests for FastAPI routes (8 tests)
+│   └── test_tools.py             # [Phase 3] Tests for tool functions (9 tests)
 │
 ├── agent/                        # *** PHASE 3 — The reasoning layer ***
 │   ├── __init__.py
-│   ├── prompts.py                # ROUTER_PROMPT and SYSTEM_PROMPT templates
-│   ├── router.py                 # Query intent classifier (HISTORICAL/CURRENT/MIXED)
+│   ├── llm.py                    # Gemini API client — generate() + stream(), retry on 429
+│   ├── prompts.py                # ROUTER_SYSTEM, ROUTER_PROMPT, SYSTEM_INSTRUCTION, ANSWER_PROMPT
+│   ├── router.py                 # Query intent classifier (HISTORICAL/CURRENT/MIXED) via Gemini
 │   ├── retriever.py              # Hybrid dense + sparse search with RRF merge
 │   ├── tools.py                  # Structured lookups: standings, race results, driver stats
-│   └── agent.py                  # Core reasoning loop — routes, retrieves, streams
+│   └── agent.py                  # Core reasoning loop — routes, retrieves, streams via Gemini
 │
 ├── api/                          # *** PHASE 3 — The web service ***
 │   ├── __init__.py
@@ -284,10 +289,13 @@ and load them with code.
 # PostgreSQL
 DATABASE_URL=postgresql+asyncpg://f1:f1secret@localhost:5433/f1kb
 
-# Ollama
+# Ollama (embeddings only — runs inside Docker)
 OLLAMA_BASE_URL=http://localhost:11434
 EMBEDDING_MODEL=nomic-embed-text
-LLM_MODEL=mistral
+
+# Gemini (LLM inference — get a free key at https://aistudio.google.com/apikey)
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
 
 # Ingestion tuning
 CHUNK_SIZE_STRUCTURED=512
@@ -1010,49 +1018,146 @@ scheduler) all at once.
 
 ---
 
-## 13. The Prompts — How We Instruct the LLM
+## 13. The Gemini LLM Client
+
+**File:** `agent/llm.py`
+
+All LLM inference — both routing and answer generation — goes through a thin
+wrapper around the Gemini REST API. We use `httpx` directly (no Google SDK
+needed) so the dependency footprint stays small.
+
+### Two Functions
+
+```python
+async def generate(system: str, prompt: str) -> str:
+    """Single blocking call. Used by the router to classify intent."""
+    ...
+
+async def stream(system: str, prompt: str) -> AsyncGenerator[str, None]:
+    """SSE streaming. Used by the agent for answer generation."""
+    ...
+```
+
+`generate` calls `generateContent` and waits for the full response.
+`stream` calls `streamGenerateContent?alt=sse` and yields tokens as they arrive.
+
+**Why `?alt=sse`?** Without this query parameter, Gemini returns a JSON array
+of all chunks at once — not a stream. The `?alt=sse` flag makes it emit
+`data: {...}` lines one at a time in Server-Sent Event format.
+
+### Retry on Rate Limits
+
+The Gemini free tier allows 10 requests per minute. If we exceed that limit,
+Gemini responds with HTTP 429. Both `generate` and `stream` retry automatically:
+
+```python
+_MAX_RETRIES = 3
+_RETRY_DELAY = 5.0   # seconds; doubles each attempt: 5s → 10s → 20s
+
+for attempt in range(_MAX_RETRIES):
+    response = await client.post(url, json=body)
+    if response.status_code == 429:
+        await asyncio.sleep(delay)
+        delay *= 2
+        continue
+    response.raise_for_status()
+    ...  # success
+```
+
+After 3 failed attempts the function raises an error (surfaced as HTTP 500
+to the caller). Under normal usage a question needs 2 Gemini calls — one for
+routing, one for answering — so staying under 10 RPM is easy.
+
+### Request Format
+
+Every Gemini request has the same JSON shape:
+
+```python
+{
+    "system_instruction": {"parts": [{"text": system}]},
+    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    "generationConfig": {"temperature": 0.1}
+}
+```
+
+`system_instruction` is the equivalent of a "system prompt" — instructions
+given to the model before the conversation starts. `contents` is the actual
+user message. `temperature: 0.1` makes answers more deterministic and
+factual (0 = always pick the most likely token; 1 = more creative).
+
+---
+
+## 14. The Prompts — How We Instruct the LLM
 
 **File:** `agent/prompts.py`
 
 Before the LLM can do anything useful, we need to tell it exactly what to do
-and in what format. We have two prompt templates.
+and in what format. We have four prompt constants.
 
-### `ROUTER_PROMPT` — Classify the Question
+### `ROUTER_SYSTEM` and `ROUTER_PROMPT` — Classify the Question
+
+`ROUTER_SYSTEM` tells Gemini it is a classifier and must respond with exactly
+one word. `ROUTER_PROMPT` is the user turn — it includes the query and
+explicit rules:
 
 ```
-You are a query classifier for an F1 chatbot.
-Classify the user's question into exactly one of these categories:
-  HISTORICAL — questions about past seasons, races, drivers, or records
-  CURRENT    — questions about live standings, latest race, or current season
-  MIXED      — questions that need both historical and current information
+Classify this Formula One query. The current year is 2026. The current F1 season is 2026.
 
-Reply with one word only: HISTORICAL, CURRENT, or MIXED.
+Query: {query}
 
-Question: {query}
+Rules:
+- HISTORICAL: about any season before 2026, race history, past champions, driver/team biographies
+- CURRENT: about the 2026 season specifically, live standings, upcoming races
+- MIXED: requires both historical context and 2026 season data
+
+One word only:
 ```
+
+**Why include "The current year is 2026"?** Without this, Gemini might classify
+"Who won the 2024 championship?" as CURRENT (it doesn't know what year it is).
+With it, the model knows 2024 is a past season and correctly returns HISTORICAL.
 
 **Why a one-word reply?** The router parses the LLM's response as an enum
 value. A single word is unambiguous and trivial to parse — no risk of the LLM
 burying the answer in a sentence.
 
-### `SYSTEM_PROMPT` — Answer Grounded in Facts
+### `SYSTEM_INSTRUCTION` and `ANSWER_PROMPT` — Answer Grounded in Facts
+
+`SYSTEM_INSTRUCTION` tells Gemini to answer using only the provided context
+and not to hallucinate. `ANSWER_PROMPT` is the user turn:
 
 ```
-You are an expert Formula 1 analyst. Answer the user's question using only
-the context provided below. Cite your sources. If the context does not contain
-enough information, say so — do not make up facts.
+Question: {question}
 
 Context:
 {context}
+
+Answer the question using only the context above:
 ```
 
 The `{context}` placeholder is filled at runtime with the retrieved chunks
 (and/or tool results). This is the "AUGMENT" step of RAG — the LLM only sees
 the facts we explicitly give it, preventing hallucination.
 
+### Why `.replace()` Instead of `.format()`
+
+The chunk content can contain curly braces — e.g. a JSON snippet like
+`{"year": 2019}`. If we use Python's `str.format()`, those braces cause a
+`KeyError` because `format()` tries to look up a variable called `year`.
+
+We avoid this by using plain string replacement:
+
+```python
+# Safe — only replaces the exact placeholder
+prompt = ANSWER_PROMPT.replace("{question}", query).replace("{context}", context_str)
+
+# Dangerous — crashes if any chunk contains {anything}
+prompt = ANSWER_PROMPT.format(question=query, context=context_str)
+```
+
 ---
 
-## 14. The Router — Classifying Query Intent
+## 15. The Router — Classifying Query Intent
 
 **File:** `agent/router.py`
 
@@ -1073,34 +1178,32 @@ being asked — because different questions need different data sources.
 User question
       │
       ▼
-POST http://localhost:11434/api/generate
-{
-  "model": "mistral",
-  "prompt": ROUTER_PROMPT.format(query=question),
-  "stream": false
-}
+gemini.generate(system=ROUTER_SYSTEM, prompt=ROUTER_PROMPT)
+  → calls POST https://generativelanguage.googleapis.com/...
       │
       ▼
-Response: {"response": "HISTORICAL", "done": true}
+Response text: "HISTORICAL"
       │
       ▼
-Intent.HISTORICAL
+Strip punctuation, uppercase first word → Intent.HISTORICAL
 ```
 
-The router strips whitespace, uppercases the response, and maps it to the
-`Intent` enum. **If the LLM returns anything unexpected** (e.g., `"I think
-it's HISTORICAL"` or an HTTP error), the router defaults to `Intent.MIXED` —
-the safest fallback because MIXED retrieves from both partitions.
+The router strips punctuation from the first word of the response (in case
+Gemini adds a period), uppercases it, and maps it to the `Intent` enum.
+**If the LLM returns anything unexpected** (e.g., `"I think it's HISTORICAL"`
+or a network error), the router defaults to `Intent.MIXED` — the safest
+fallback because MIXED retrieves from both partitions and never silently
+discards relevant data.
 
 ### Key Implementation Details
 
-- Uses `httpx.AsyncClient` (same as the extractors — consistent HTTP layer)
-- `health_check()` verifies the `llm_model` is present in Ollama's model list
-- Supports `async with Router() as r:` so the HTTP client is properly closed
+- Calls `agent.llm.generate()` — no HTTP client to manage in `router.py` itself
+- No `close()` method needed — `llm.generate()` opens and closes its own `httpx.AsyncClient` per call
+- Exceptions are caught and return `Intent.MIXED`, so the router never crashes a request
 
 ---
 
-## 15. The Retriever — Hybrid Search and RRF
+## 16. The Retriever — Hybrid Search and RRF
 
 **File:** `agent/retriever.py`
 
@@ -1123,16 +1226,21 @@ Combining both catches what either alone would miss.
 
 ```sql
 SELECT chunk_id, content, source, content_type, partition, metadata,
-       1 - (embedding <=> :emb::vector) AS similarity
+       1 - (embedding <=> CAST(:emb AS vector)) AS similarity
 FROM chunks
 WHERE partition = ANY(:parts) AND embedding IS NOT NULL
-ORDER BY embedding <=> :emb::vector
+ORDER BY embedding <=> CAST(:emb AS vector)
 LIMIT :lim
 ```
 
 The `<=>` operator (provided by pgvector) computes **cosine distance** between
 the query embedding and each stored chunk embedding. Lower distance = more
 similar.
+
+**Why `CAST(:emb AS vector)` and not `:emb::vector`?** The `::` shorthand for
+PostgreSQL casts conflicts with the `asyncpg` driver's named parameter syntax —
+asyncpg interprets `::vector` as part of the parameter name and raises a syntax
+error. The longer `CAST(... AS vector)` form avoids this ambiguity.
 
 ### Sparse Retrieval (Full-Text Search)
 
@@ -1178,7 +1286,7 @@ After RRF:
 
 ---
 
-## 16. The Tools — Structured Data Lookups
+## 17. The Tools — Structured Data Lookups
 
 **File:** `agent/tools.py`
 
@@ -1233,7 +1341,7 @@ from Phase 1 ingestion. Falls back gracefully if no match is found.
 
 ---
 
-## 17. The Agent — The Reasoning Loop
+## 18. The Agent — The Reasoning Loop
 
 **File:** `agent/agent.py`
 
@@ -1250,26 +1358,27 @@ to answer it, gathers the relevant information, and streams the response.
 ```
 
 The context string assembles the retrieved chunks and/or standings into a
-single block of text that gets injected into `SYSTEM_PROMPT`.
+single block of text that gets injected into `ANSWER_PROMPT`.
 
 ### `async run(query)` — Streaming Mode
 
 ```
-SYSTEM_PROMPT.format(context=context_str)
+Build prompt with ANSWER_PROMPT.replace("{question}", query)
+                                .replace("{context}", context_str)
       │
       ▼
-POST http://localhost:11434/api/generate
-{"model": "mistral", "prompt": "...", "stream": true}
+gemini.stream(system=SYSTEM_INSTRUCTION, prompt=prompt)
+  → calls POST https://generativelanguage.googleapis.com/.../streamGenerateContent?alt=sse
       │
       ▼
-for each line in response stream:
+for each SSE line:
     parse JSON → yield token string
-    stop when "done": true
+    until stream ends
 ```
 
-This is how `GET /chat/stream` works — each token from the LLM is yielded
-immediately, so the browser starts rendering the answer before the LLM is done
-generating it.
+This is how `GET /chat/stream` works — each token from Gemini is yielded
+immediately, so the browser starts rendering the answer before generation is
+done. Typical latency: ~5 seconds for a full answer.
 
 ### `async run_sync(query)` — Non-Streaming Mode
 
@@ -1287,13 +1396,14 @@ string. Returns a structured dict:
 
 ### Resource Management
 
-Both the `Router` (an HTTP client to Ollama) and `Retriever` (a database
-connection pool) hold open connections. `Agent.close()` properly shuts both
-down. The FastAPI lifespan calls `close()` on shutdown so no connections leak.
+The `Retriever` (a database connection pool) holds open connections.
+`Agent.close()` shuts it down. The FastAPI lifespan calls `close()` on
+shutdown so no connections leak. The Gemini client (`agent/llm.py`) opens a
+fresh `httpx.AsyncClient` per request — no persistent connection to manage.
 
 ---
 
-## 18. The FastAPI Layer — Serving the Chatbot
+## 19. The FastAPI Layer — Serving the Chatbot
 
 **Files:** `api/main.py`, `api/schemas.py`, `api/routes/chat.py`,
 `api/routes/health.py`
@@ -1388,7 +1498,7 @@ pool) is reused across all requests — no reconnection overhead per request.
 
 ---
 
-## 19. The Health Check — Making Sure Everything Is Online
+## 20. The Health Check — Making Sure Everything Is Online
 
 **File:** `ingestion/healthcheck.py`
 
@@ -1416,7 +1526,7 @@ uv run python -m ingestion.healthcheck
 
 ---
 
-## 20. The Tests — How We Verify Our Code Works
+## 21. The Tests — How We Verify Our Code Works
 
 ### What Is Automated Testing?
 
@@ -1429,7 +1539,7 @@ will catch it.
 
 **Run with:** `uv run python -m pytest tests/ -v`
 
-We have **30 tests** across four files, all passing.
+We have **51 tests** across six files, all passing.
 
 #### `tests/test_extractors.py` — 10 Tests
 
@@ -1507,21 +1617,60 @@ components with fake versions:
 | `test_run_news_scrape_writes_job_run` | Same for the news job |
 | `test_run_openf1_refresh_records_failure` | When DB throws an error, job writes `success=False` and records the error |
 
-#### `tests/test_agent.py` — 7 Tests (Phase 3)
+#### `tests/test_agent.py` — 11 Tests (Phase 3)
 
 These test the router, retriever RRF logic, and agent intent routing **without
-starting Ollama or PostgreSQL**. HTTP calls are intercepted by `respx`; DB calls
-are patched with `unittest.mock`.
+starting Gemini or PostgreSQL**. Gemini calls are patched with `unittest.mock`;
+DB calls are also patched.
 
 | Test | What It Verifies |
 |------|-----------------|
-| `test_retriever_rrf_merge` | Chunks appearing in both dense and sparse results get higher RRF scores than single-list chunks |
-| `test_router_classifies_historical` | Mocked Ollama returns `"HISTORICAL"` → `Intent.HISTORICAL` |
-| `test_router_classifies_current` | Mocked Ollama returns `"CURRENT"` → `Intent.CURRENT` |
-| `test_router_defaults_to_mixed_on_unknown` | Mocked Ollama returns `"BLAH"` → falls back to `Intent.MIXED` |
+| `test_retriever_rrf_merge` | Chunks in both dense and sparse results get higher RRF scores than single-list chunks |
+| `test_retriever_rrf_empty_dense` | RRF works correctly when dense results are empty |
+| `test_retriever_rrf_empty_sparse` | RRF works correctly when sparse results are empty |
+| `test_retriever_rrf_both_empty` | RRF returns empty list when both result lists are empty |
+| `test_router_classifies_historical` | Mocked Gemini returns `"HISTORICAL"` → `Intent.HISTORICAL` |
+| `test_router_classifies_current` | Mocked Gemini returns `"CURRENT"` → `Intent.CURRENT` |
+| `test_router_defaults_to_mixed_on_unknown` | Mocked Gemini returns `"BLAH"` → falls back to `Intent.MIXED` |
+| `test_router_defaults_to_mixed_on_exception` | Gemini raises an exception → falls back to `Intent.MIXED` |
 | `test_agent_historical_uses_static_partition` | `HISTORICAL` intent → retriever called with `partitions=["static"]` |
 | `test_agent_current_skips_retriever` | `CURRENT` intent → retriever never called; `get_current_standings` awaited |
 | `test_agent_mixed_uses_both_partitions` | `MIXED` intent → retriever called with `partitions=["static", "live"]` |
+
+#### `tests/test_api.py` — 8 Tests (Phase 3)
+
+These test the FastAPI routes using `httpx.AsyncClient` with `ASGITransport`.
+Because `ASGITransport` does not trigger the FastAPI lifespan, the agent is set
+directly on `app.state.agent` before each test — no real Gemini or database
+connection needed.
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_post_chat_happy_path` | POST /chat returns answer, sources, intent, latency_ms |
+| `test_post_chat_max_chunks_passthrough` | `max_chunks` is forwarded to the agent |
+| `test_post_chat_default_max_chunks` | Omitting `max_chunks` uses the default (6) |
+| `test_post_chat_missing_query` | Missing `query` field returns HTTP 422 |
+| `test_get_stream_sse_format` | GET /chat/stream returns `text/event-stream` with `data: {"token": ...}` lines |
+| `test_get_stream_missing_query` | Missing `?query=` returns HTTP 422 |
+| `test_health_ok` | GET /health returns `status: ok` with postgres and ollama both ok |
+| `test_health_postgres_error` | Postgres exception → `status: error` in the response body |
+
+#### `tests/test_tools.py` — 9 Tests (Phase 3)
+
+These test `get_current_standings` and `get_race_results` with `respx` HTTP
+mocks — the real OpenF1 and Jolpica APIs are never called.
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_standings_success` | Returns a numbered standings list |
+| `test_standings_empty` | Empty API response → graceful fallback string |
+| `test_standings_http_error` | HTTP 500 → fallback string |
+| `test_standings_network_error` | Connection error → fallback string |
+| `test_race_results_success` | Returns top-3 finishers for matching race |
+| `test_race_results_match_by_locality` | Matches race by locality (e.g. "Monte Carlo") |
+| `test_race_results_no_match` | No matching GP → fallback string |
+| `test_race_results_http_error` | HTTP error → fallback string |
+| `test_race_results_malformed_response` | Unexpected JSON shape → fallback string |
 
 #### `tests/conftest.py` — Shared Setup
 
@@ -1530,7 +1679,7 @@ a special pytest file — fixtures defined here are available to all test files.
 
 ---
 
-## 21. Docker — Running Services Without Installing Them
+## 22. Docker — Running Services Without Installing Them
 
 ### What Is Docker?
 
@@ -1555,15 +1704,25 @@ services:
         # ^ Automatically creates tables when the container first starts
 
   ollama:
-    image: ollama/ollama:latest       # Latest Ollama release
+    image: ollama/ollama:latest       # Latest Ollama release — embeddings only
     ports:
-      - "11434:11434"                 # Access on port 11434
+      - "11434:11434"
     volumes:
       - ollama_models:/root/.ollama   # Persist downloaded AI models
+    healthcheck:
+      test: ["CMD", "ollama", "list"] # Image has no curl; use ollama CLI instead
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   api:
     build: .                          # Builds from the Dockerfile in the project root
-    env_file: .env
+    env_file: .env                    # Loads GEMINI_API_KEY and other secrets
+    environment:
+      # Override localhost URLs from .env with Docker service hostnames.
+      # Inside a container, "localhost" means the container itself — not the host machine.
+      DATABASE_URL: postgresql+asyncpg://f1:f1secret@postgres:5432/f1kb
+      OLLAMA_BASE_URL: http://ollama:11434
     ports:
       - "8000:8000"                   # FastAPI available at http://localhost:8000
     depends_on:
@@ -1571,30 +1730,53 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
+
+**Why the `environment:` block?** The `.env` file uses `localhost` URLs because
+that's where things live on your development machine. But inside the `api`
+container, `localhost` refers to the container itself — not PostgreSQL or Ollama.
+Docker service names (`postgres`, `ollama`) are the correct hostnames for
+inter-container communication. The `environment:` block overrides the `.env`
+values with the correct internal hostnames, while still letting `.env` supply
+`GEMINI_API_KEY` and other settings via `env_file:`.
 
 ### The `Dockerfile`
 
 ```dockerfile
 FROM python:3.13-slim
 WORKDIR /app
+
+# gcc and python3-dev are required because aiohttp has no pre-built wheel
+# for linux/aarch64 + Python 3.13 and must compile from source on ARM64 Macs.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install uv
+
+# Stage 1: install dependencies only (layer is cached when only source files change)
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen          # installs exact locked dependencies
+RUN uv sync --frozen --no-install-project
+
+# Stage 2: copy source code and install the project itself
 COPY . .
+RUN uv sync --frozen
+
 CMD ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-`python:3.13-slim` matches `requires-python = ">=3.13"` in `pyproject.toml`.
-`uv sync --frozen` uses the lock file exactly — no version drift between
-environments.
+**Why two `uv sync` stages?** The first stage (`--no-install-project`) installs
+all dependencies but not the project package itself. Because it only needs
+`pyproject.toml` and `uv.lock`, Docker caches this layer — if you only change
+Python source files (not dependencies), Docker reuses the cached layer and skips
+the long dependency install. The second `uv sync` (after `COPY . .`) installs
+the project package itself, which requires the source files to be present.
 
 **Key commands:**
 ```bash
-docker compose up -d       # Start both services in the background
-docker compose down        # Stop both services
+docker compose up -d       # Start all three services in the background
+docker compose down        # Stop all services
 docker compose logs -f     # Watch live logs
+docker compose logs api    # Logs for just the API container
 ```
 
 ### Why Port 5433 Instead of 5432?
@@ -1603,9 +1785,17 @@ PostgreSQL normally runs on port 5432. We use 5433 to avoid conflicts if you
 already have PostgreSQL installed on your machine. The container internally still
 uses 5432, but Docker maps it to 5433 on your host.
 
+### Why Is Ollama CPU-Only in Docker?
+
+On macOS, Docker containers run inside a Linux virtual machine and cannot access
+the Mac's Metal GPU. This means Ollama runs CPU-only inside Docker — large
+language models (3B+ parameters) would take minutes per response. This is why
+we use **Gemini** (a cloud API) for all LLM inference and reserve Ollama only
+for embeddings, which are much smaller and fast even on CPU.
+
 ---
 
-## 22. The Database Schema — How Data Is Organised on Disk
+## 23. The Database Schema — How Data Is Organised on Disk
 
 **File:** `db/schema.sql`
 
@@ -1668,7 +1858,7 @@ CREATE INDEX chunks_content_tsv_idx ON chunks USING gin(content_tsv);
 
 ---
 
-## 23. Key Python Concepts Used in This Project
+## 24. Key Python Concepts Used in This Project
 
 ### `async` / `await` — Doing Things Concurrently
 
@@ -1743,7 +1933,7 @@ immediately.
 
 ---
 
-## 24. How to Run the Project
+## 25. How to Run the Project
 
 ### First-Time Setup
 
@@ -1752,17 +1942,20 @@ immediately.
 git clone <repo-url>
 cd f1-chatbot
 
-# 2. Install Python dependencies
+# 2. Add your Gemini API key to .env
+#    Get a free key at https://aistudio.google.com/apikey
+echo "GEMINI_API_KEY=your_key_here" >> .env
+
+# 3. Install Python dependencies (needed to run ingestion locally)
 uv sync --extra dev
 
-# 3. Start Docker services (PostgreSQL + Ollama + API)
+# 4. Start Docker services (PostgreSQL + Ollama + API)
 docker compose up -d
 
-# 4. Download the AI models (one-time)
-docker compose exec ollama ollama pull nomic-embed-text   # ~270 MB — embeddings
-docker compose exec ollama ollama pull mistral            # ~4 GB  — chat LLM
+# 5. Download the Ollama embedding model (one-time, ~270 MB)
+docker compose exec ollama ollama pull nomic-embed-text
 
-# 5. Verify everything is working
+# 6. Verify everything is working
 uv run python -m ingestion.healthcheck
 ```
 
@@ -1809,7 +2002,10 @@ The API starts the background scheduler automatically — no need to run
 ### Running Tests
 
 ```bash
-# Run all 30 tests with verbose output
+# Install dev dependencies (pytest, respx, etc.) if not already done
+uv sync --extra dev
+
+# Run all 51 tests with verbose output
 uv run python -m pytest tests/ -v
 ```
 
@@ -1821,7 +2017,7 @@ docker compose down   # Stops PostgreSQL, Ollama, and the API
 
 ---
 
-## 25. Glossary
+## 26. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -1868,12 +2064,12 @@ docker compose down   # Stops PostgreSQL, Ollama, and the API
 | **FastAPI** | A Python web framework for building async HTTP APIs with automatic request validation. |
 | **Intent** | The classified purpose of a user's question: `HISTORICAL`, `CURRENT`, or `MIXED`. |
 | **Lifespan** | FastAPI's startup/shutdown hook — runs setup before the server starts and teardown after it stops. |
-| **Mistral** | An open-source LLM run locally via Ollama. Used by the agent to generate answers (Phase 3). |
+| **Gemini 2.5 Flash** | Google's cloud LLM used for all reasoning: query classification (routing) and answer generation. Free tier: 10 RPM, 500 req/day. |
 | **RRF (Reciprocal Rank Fusion)** | An algorithm that merges two ranked result lists by summing `1/(k+rank)` scores. Rewards chunks that rank well on both signals. |
 | **Router** | The component that classifies a user's question into an intent class before any retrieval happens. |
 | **Retriever** | The component that fetches the most relevant knowledge-base chunks for a given query using hybrid search. |
 | **SSE (Server-Sent Events)** | A browser standard for receiving a stream of events over a single HTTP connection. Used by `GET /chat/stream`. |
 | **Sparse retrieval** | Full-text keyword search — finds chunks that contain the exact words from the query. |
 | **Streaming** | Yielding LLM tokens to the client as they are generated, rather than waiting for the full answer. |
-| **System prompt** | Instructions given to the LLM at the start of a conversation. Our `SYSTEM_PROMPT` tells the LLM to answer only from the provided context. |
+| **System prompt** | Instructions given to the LLM before the user's message. `ROUTER_SYSTEM` instructs Gemini to classify intent; `SYSTEM_INSTRUCTION` tells it to answer only from the provided context. |
 | **uvicorn** | An ASGI web server that runs the FastAPI application. |
