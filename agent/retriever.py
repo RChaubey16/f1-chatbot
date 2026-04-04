@@ -56,11 +56,11 @@ class Retriever:
             result = await session.execute(
                 text("""
                     SELECT chunk_id, content, source, content_type, partition, metadata,
-                           1 - (embedding <=> :emb::vector) AS similarity
+                           1 - (embedding <=> CAST(:emb AS vector)) AS similarity
                     FROM chunks
                     WHERE partition = ANY(:parts)
                       AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :emb::vector
+                    ORDER BY embedding <=> CAST(:emb AS vector)
                     LIMIT :lim
                 """),
                 {"emb": emb_str, "parts": partitions, "lim": limit},

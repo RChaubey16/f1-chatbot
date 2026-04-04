@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import AsyncGenerator
 
-import httpx
-
-from agent.prompts import SYSTEM_PROMPT
+from agent import llm as gemini
+from agent.prompts import ANSWER_PROMPT, SYSTEM_INSTRUCTION
 from agent.retriever import RetrievedChunk, Retriever
 from agent.router import Intent, Router
 from agent.tools import get_current_standings
-from ingestion.core.config import settings
 from ingestion.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -85,30 +82,9 @@ class Agent:
         Yields individual response tokens as strings.
         """
         _, _, context_str = await self._prepare_context(query)
-        prompt = SYSTEM_PROMPT.format(context=context_str)
-
-        url = f"{settings.ollama_base_url}/api/generate"
-        payload = {
-            "model": settings.llm_model,
-            "prompt": prompt,
-            "stream": True,
-        }
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", url, json=payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    token = data.get("response", "")
-                    if token:
-                        yield token
-                    if data.get("done", False):
-                        break
+        prompt = ANSWER_PROMPT.replace("{context}", context_str).replace("{question}", query)
+        async for token in gemini.stream(system=SYSTEM_INSTRUCTION, prompt=prompt):
+            yield token
 
     async def run_sync(self, query: str, max_chunks: int = 6) -> dict:
         """Return the full answer and metadata for *query* (non-streaming).
@@ -124,31 +100,11 @@ class Agent:
         t0 = time.monotonic()
 
         intent, chunks, context_str = await self._prepare_context(query, top_k=max_chunks)
-        prompt = SYSTEM_PROMPT.format(context=context_str)
-
-        url = f"{settings.ollama_base_url}/api/generate"
-        payload = {
-            "model": settings.llm_model,
-            "prompt": prompt,
-            "stream": True,
-        }
+        prompt = ANSWER_PROMPT.replace("{context}", context_str).replace("{question}", query)
 
         answer_parts: list[str] = []
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", url, json=payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    token = data.get("response", "")
-                    if token:
-                        answer_parts.append(token)
-                    if data.get("done", False):
-                        break
+        async for token in gemini.stream(system=SYSTEM_INSTRUCTION, prompt=prompt):
+            answer_parts.append(token)
 
         latency_ms = (time.monotonic() - t0) * 1000.0
 

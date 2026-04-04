@@ -13,10 +13,13 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://f1:f1secret@localhost:5432/f1kb"
 
-    # Ollama
+    # Ollama (embeddings only)
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text"
-    llm_model: str = "mistral"
+
+    # Gemini (LLM inference)
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
 
     # HTTP
     user_agent: str = "F1Chatbot/0.1 (https://github.com/f1-chatbot; f1chatbot@example.com)"
