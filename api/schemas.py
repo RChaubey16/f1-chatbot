@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -19,7 +21,7 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
-    intent: str
+    intent: Literal["HISTORICAL", "CURRENT", "MIXED"]
     latency_ms: float
 
 

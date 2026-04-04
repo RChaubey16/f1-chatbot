@@ -20,13 +20,36 @@ export async function streamChat(
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
+  let buffer = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-    const chunk = decoder.decode(value, { stream: true })
-    for (const line of chunk.split('\n')) {
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''  // last element may be incomplete
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') {
+          onDone()
+          return
+        }
+        try {
+          const parsed = JSON.parse(payload) as { token: string }
+          onToken(parsed.token)
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+
+    // flush any remaining buffered bytes
+    buffer += decoder.decode()
+    for (const line of buffer.split('\n')) {
       if (!line.startsWith('data: ')) continue
       const payload = line.slice(6).trim()
       if (payload === '[DONE]') {
@@ -40,7 +63,10 @@ export async function streamChat(
         // skip malformed lines
       }
     }
+  } finally {
+    reader.releaseLock()
   }
+
   onDone()
 }
 
