@@ -21,3 +21,16 @@ class ChatResponse(BaseModel):
     sources: list[Source]
     intent: str
     latency_ms: float
+
+
+class DriverStanding(BaseModel):
+    position: int
+    driver: str
+    team: str
+    points: int
+
+
+class ConstructorStanding(BaseModel):
+    position: int
+    team: str
+    points: int

@@ -9,6 +9,7 @@ from ingestion.core.logging import get_logger
 
 import api.routes.chat as chat_router
 import api.routes.health as health_router
+import api.routes.standings as standings_router
 
 log = get_logger(__name__)
 
@@ -43,3 +44,4 @@ app = FastAPI(
 
 app.include_router(chat_router.router)
 app.include_router(health_router.router)
+app.include_router(standings_router.router)
