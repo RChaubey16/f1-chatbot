@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { fetchDriverStandings, fetchConstructorStandings } from '@/lib/api'
 import type { DriverStanding, ConstructorStanding } from '@/lib/types'
 
@@ -12,7 +12,7 @@ export function useStandings() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
     setError(false)
     try {
@@ -27,7 +27,7 @@ export function useStandings() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     load()
