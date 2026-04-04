@@ -20,6 +20,7 @@ export function useChat() {
     setMessages(prev => [...prev, userMsg, aiMsg])
     setIsStreaming(true)
 
+    let streamSucceeded = false
     try {
       await streamChat(
         query,
@@ -35,8 +36,16 @@ export function useChat() {
           setIsStreaming(false)
         }
       )
+      streamSucceeded = true
     } catch {
       // SSE failed — fall back to POST /chat
+    } finally {
+      if (!streamSucceeded) {
+        // onDone was never called on the error path; isStreaming will be reset below
+      }
+    }
+
+    if (!streamSucceeded) {
       try {
         const resp = await sendChat(query)
         setMessages(prev =>
@@ -61,8 +70,9 @@ export function useChat() {
               : m
           )
         )
+      } finally {
+        setIsStreaming(false)
       }
-      setIsStreaming(false)
     }
   }, [])
 
