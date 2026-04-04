@@ -22,7 +22,10 @@ async def driver_standings() -> list[DriverStanding]:
             resp = await client.get(_JOLPICA_DRIVERS)
             resp.raise_for_status()
             data = resp.json()
-        rows = data["MRData"]["StandingsTable"]["StandingsLists"][0]["DriverStandings"]
+        standings_lists = data["MRData"]["StandingsTable"]["StandingsLists"]
+        if not standings_lists:
+            return []
+        rows = standings_lists[0]["DriverStandings"]
     except Exception as exc:
         log.warning("driver_standings fetch failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Standings unavailable") from exc
@@ -32,7 +35,7 @@ async def driver_standings() -> list[DriverStanding]:
             position=int(r["position"]),
             driver=f"{r['Driver']['givenName']} {r['Driver']['familyName']}",
             team=r["Constructors"][0]["name"],
-            points=int(r["points"]),
+            points=float(r["points"]),
         )
         for r in rows
     ]
@@ -45,7 +48,10 @@ async def constructor_standings() -> list[ConstructorStanding]:
             resp = await client.get(_JOLPICA_CONSTRUCTORS)
             resp.raise_for_status()
             data = resp.json()
-        rows = data["MRData"]["StandingsTable"]["StandingsLists"][0]["ConstructorStandings"]
+        standings_lists = data["MRData"]["StandingsTable"]["StandingsLists"]
+        if not standings_lists:
+            return []
+        rows = standings_lists[0]["ConstructorStandings"]
     except Exception as exc:
         log.warning("constructor_standings fetch failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Standings unavailable") from exc
@@ -54,7 +60,7 @@ async def constructor_standings() -> list[ConstructorStanding]:
         ConstructorStanding(
             position=int(r["position"]),
             team=r["Constructor"]["name"],
-            points=int(r["points"]),
+            points=float(r["points"]),
         )
         for r in rows
     ]

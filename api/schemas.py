@@ -27,10 +27,10 @@ class DriverStanding(BaseModel):
     position: int
     driver: str
     team: str
-    points: int
+    points: float
 
 
 class ConstructorStanding(BaseModel):
     position: int
     team: str
-    points: int
+    points: float

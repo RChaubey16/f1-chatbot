@@ -88,7 +88,7 @@ async def test_driver_standings_success(test_client):
     assert data[0]["position"] == 1
     assert data[0]["driver"] == "Max Verstappen"
     assert data[0]["team"] == "Red Bull Racing"
-    assert data[0]["points"] == 136
+    assert data[0]["points"] == 136.0
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_constructor_standings_success(test_client):
     assert len(data) == 2
     assert data[0]["position"] == 1
     assert data[0]["team"] == "Red Bull Racing"
-    assert data[0]["points"] == 249
+    assert data[0]["points"] == 249.0
 
 
 @pytest.mark.asyncio
@@ -123,3 +123,22 @@ async def test_constructor_standings_api_error_returns_503(test_client):
         response = await test_client.get("/standings/constructors")
 
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_driver_standings_empty_season_returns_empty_list(test_client):
+    payload = {
+        "MRData": {
+            "StandingsTable": {
+                "StandingsLists": []
+            }
+        }
+    }
+    with respx.mock:
+        respx.get(_JOLPICA_DRIVERS_URL).mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        response = await test_client.get("/standings/drivers")
+
+    assert response.status_code == 200
+    assert response.json() == []
