@@ -18,7 +18,7 @@ this is for you.
 8. [The Chunker — How We Break Text Into Bite-Sized Pieces](#8-the-chunker--how-we-break-text-into-bite-sized-pieces)
 9. [The Embedder — How We Turn Text Into Numbers](#9-the-embedder--how-we-turn-text-into-numbers)
 10. [The Loader — How We Store Everything in the Database](#10-the-loader--how-we-store-everything-in-the-database)
-11. [The Pipeline — How Everything Runs Together](#11-the-pipeline--how-everything-runs-together)
+11. [The Pipeline — How Everything Runs Together](#11-the-pipeline--how-everything-runs-everything-runs-together)
 12. [The Scheduler — Keeping Live Data Fresh Automatically](#12-the-scheduler--keeping-live-data-fresh-automatically)
 13. [The Gemini LLM Client](#13-the-gemini-llm-client)
 14. [The Prompts — How We Instruct the LLM](#14-the-prompts--how-we-instruct-the-llm)
@@ -33,7 +33,15 @@ this is for you.
 23. [The Database Schema — How Data Is Organised on Disk](#23-the-database-schema--how-data-is-organised-on-disk)
 24. [Key Python Concepts Used in This Project](#24-key-python-concepts-used-in-this-project)
 25. [How to Run the Project](#25-how-to-run-the-project)
-26. [Glossary](#26-glossary)
+26. [The Standings API Endpoints — New Backend Routes for the UI](#26-the-standings-api-endpoints--new-backend-routes-for-the-ui)
+27. [The Frontend — How the Chat UI Was Built](#27-the-frontend--how-the-chat-ui-was-built)
+28. [lib/api.ts — The Frontend API Client](#28-libapits--the-frontend-api-client)
+29. [useChat — Streaming Messages to the Screen](#29-usechat--streaming-messages-to-the-screen)
+30. [useStandings — The Live Standings Sidebar](#30-usestandings--the-live-standings-sidebar)
+31. [The Components — Building Blocks of the UI](#31-the-components--building-blocks-of-the-ui)
+32. [The F1 Dark Theme](#32-the-f1-dark-theme)
+33. [Frontend Tests — Vitest + React Testing Library](#33-frontend-tests--vitest--react-testing-library)
+34. [Glossary](#34-glossary)
 
 ---
 
@@ -49,7 +57,7 @@ For example:
 - "What happened in the last race weekend?"
 
 To answer these questions, the chatbot needs a **knowledge base** — a searchable
-store of F1 facts. All three phases are now complete:
+store of F1 facts. All four phases are now complete:
 
 - **Phase 1 (Static KB):** Historical data 1950–2024 — race results, qualifying,
   standings, driver/constructor profiles, Wikipedia articles.
@@ -59,6 +67,8 @@ store of F1 facts. All three phases are now complete:
 - **Phase 3 (RAG Agent + API):** A FastAPI web service that accepts a question,
   classifies its intent, retrieves grounded context via hybrid search, and streams
   an answer from Gemini 2.5 Flash (Google's free-tier cloud API).
+- **Frontend (Chat UI):** A Next.js web app with a streaming chat panel on the
+  left and a live standings sidebar on the right, deployed to Vercel.
 
 Phases 1 and 2 follow the same four ingestion steps:
 
@@ -162,10 +172,24 @@ one is and why we need it.
 | **tqdm** | Shows progress bars in the terminal | Pipeline — shows how many documents have been processed |
 | **beautifulsoup4** / **lxml** | Parses HTML | News extractor — extracts article body, headline, and date from Motorsport.com pages |
 | **apscheduler** | Runs jobs on a schedule | Scheduler — fires the OpenF1 refresh and news scrape jobs every few hours |
-| **fastapi** | Web framework for building APIs | `api/` — defines the `/chat` and `/health` HTTP endpoints |
+| **fastapi** | Web framework for building APIs | `api/` — defines the `/chat`, `/health`, and `/standings/*` HTTP endpoints |
 | **uvicorn** | ASGI web server | Runs the FastAPI app (like Apache/nginx but for async Python) |
-| **pytest** | Testing framework | Runs our test suite to verify code works |
+| **pytest** | Testing framework | Runs our backend test suite to verify code works |
 | **respx** | Mocks HTTP requests in tests | Tests — pretends to be the Jolpica/Wikipedia/OpenF1/Ollama API so tests don't need the internet |
+
+### Frontend Tools
+
+| Tool | What It Is | Why We Use It |
+|------|-----------|---------------|
+| **Next.js 16** | React framework with routing, SSR, and App Router | Handles page routing, server/client component split, and Vercel deployment |
+| **React 19** | UI component library | Building block for all UI — components, state, effects |
+| **TypeScript** | JavaScript with type annotations | Catches bugs at edit time, enables IDE autocompletion |
+| **Tailwind CSS v4** | Utility-first CSS framework | Style components with class names instead of writing CSS files |
+| **Vitest** | JavaScript test runner (fast, Vite-based) | Runs frontend unit tests — much faster than Jest for modern projects |
+| **React Testing Library** | Tests React components by simulating user interactions | Tests how the UI behaves rather than implementation details |
+| **MSW (Mock Service Worker)** | Intercepts `fetch` requests in tests | Lets frontend tests run without a real API server |
+| **pnpm** | Fast JavaScript package manager | Installs frontend dependencies (similar to `npm` or `yarn`) |
+| **clsx + tailwind-merge** | Utilities for composing CSS class names | Safely merge Tailwind classes without conflicts |
 
 ---
 
@@ -240,19 +264,57 @@ f1-chatbot/
 ├── api/                          # *** PHASE 3 — The web service ***
 │   ├── __init__.py
 │   ├── main.py                   # FastAPI app with lifespan + scheduler integration
-│   ├── schemas.py                # ChatRequest / ChatResponse Pydantic models
+│   ├── schemas.py                # ChatRequest / ChatResponse / DriverStanding / ConstructorStanding models
 │   └── routes/
 │       ├── chat.py               # POST /chat + GET /chat/stream (SSE)
-│       └── health.py             # GET /health — infra status check
+│       ├── health.py             # GET /health — infra status check
+│       └── standings.py          # [Frontend] GET /standings/drivers + /standings/constructors
+│
+├── frontend/                     # *** FRONTEND — Next.js Chat UI ***
+│   ├── app/
+│   │   ├── globals.css           # F1 CSS custom properties + Tailwind v4 base
+│   │   ├── layout.tsx            # Root layout: Geist font + <Navbar> + dark background
+│   │   └── page.tsx              # Single page — renders <SplitLayout>
+│   ├── components/
+│   │   ├── layout/
+│   │   │   ├── Navbar.tsx        # F1 brand mark + live API health dot
+│   │   │   └── SplitLayout.tsx   # Two-column wrapper (chat left, standings right)
+│   │   ├── chat/
+│   │   │   ├── ChatPanel.tsx     # Scrollable message list + input area
+│   │   │   ├── MessageBubble.tsx # User / AI bubble + intent badge + streaming dots
+│   │   │   ├── ChatInput.tsx     # Auto-resize textarea + send button
+│   │   │   └── SourceChip.tsx    # Inline citation pill
+│   │   └── standings/
+│   │       ├── StandingsPanel.tsx  # 280px right panel with tabs + rows
+│   │       ├── StandingsTabs.tsx   # Drivers / Constructors tab switcher
+│   │       └── StandingsRow.tsx    # Position, team colour bar, name, points
+│   ├── hooks/
+│   │   ├── useChat.ts            # Message state + SSE streaming + POST fallback
+│   │   └── useStandings.ts       # Fetch standings on mount, 6h refresh
+│   ├── lib/
+│   │   ├── api.ts                # streamChat, sendChat, fetchDriverStandings, checkHealth
+│   │   ├── types.ts              # All shared TypeScript interfaces
+│   │   ├── teamColors.ts         # Team → hex colour map
+│   │   └── utils.ts              # cn() className utility
+│   ├── __tests__/
+│   │   ├── MessageBubble.test.tsx  # Component render tests (4 tests)
+│   │   ├── useChat.test.ts         # Hook logic tests (5 tests)
+│   │   └── useStandings.test.ts    # Hook logic tests (3 tests)
+│   ├── package.json              # Frontend dependencies (Next.js, React, Tailwind, Vitest)
+│   ├── vitest.config.ts          # Vitest + jsdom + @/ alias
+│   └── vercel.json               # Vercel deployment config
 │
 ├── docs/                         # Planning and summary documents
 │   ├── PLAN.md
-│   ├── PHASE_1.md
-│   ├── PHASE_2.md
-│   ├── PHASE_3.md
+│   ├── PHASE_1.md, PHASE_2.md, PHASE_3.md, FE.md
 │   ├── Phase-1-summary.md        # Detailed technical summary — Phase 1
 │   ├── Phase-2-summary.md        # Detailed technical summary — Phase 2
-│   └── Phase-3-summary.md        # Detailed technical summary — Phase 3
+│   ├── Phase-3-summary.md        # Detailed technical summary — Phase 3
+│   └── FE-summary.md             # Detailed technical summary — Frontend
+│
+├── tests/                        # Backend automated tests (56 total)
+│   ├── test_standings.py         # [Frontend] Tests for GET /standings/* (5 tests)
+│   └── ...                       # (other test files as before)
 │
 └── explain/
     └── notes.md                  # This file!
@@ -1537,9 +1599,11 @@ will catch it.
 
 ### Our Test Suite
 
-**Run with:** `uv run python -m pytest tests/ -v`
+**Backend:** `uv run python -m pytest tests/ -v` — **56 tests** across seven files, all passing.
 
-We have **51 tests** across six files, all passing.
+**Frontend:** `cd frontend && pnpm test` — **12 tests** across three files, all passing.
+
+**Total: 68 tests.**
 
 #### `tests/test_extractors.py` — 10 Tests
 
@@ -1671,6 +1735,20 @@ mocks — the real OpenF1 and Jolpica APIs are never called.
 | `test_race_results_no_match` | No matching GP → fallback string |
 | `test_race_results_http_error` | HTTP error → fallback string |
 | `test_race_results_malformed_response` | Unexpected JSON shape → fallback string |
+
+#### `tests/test_standings.py` — 5 Tests (Frontend backend)
+
+These test the new `GET /standings/drivers` and `GET /standings/constructors`
+endpoints added to support the UI. They use `respx` to mock the upstream Jolpica
+API so no real HTTP is made.
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_driver_standings_success` | Returns 200 with position, driver name, team, and points |
+| `test_driver_standings_api_error_returns_503` | Jolpica returning 503 → endpoint returns 503 |
+| `test_constructor_standings_success` | Returns 200 with position, team, and points |
+| `test_constructor_standings_api_error_returns_503` | Jolpica error → 503 with detail message |
+| `test_driver_standings_empty_season_returns_empty_list` | Empty `StandingsLists` → returns `[]` (not an error) |
 
 #### `tests/conftest.py` — Shared Setup
 
@@ -1999,14 +2077,34 @@ curl -N "http://localhost:8000/chat/stream?query=What+are+the+current+standings"
 The API starts the background scheduler automatically — no need to run
 `ingestion.scheduler` separately.
 
+### Running the Frontend
+
+```bash
+cd frontend
+
+# Install dependencies
+pnpm install           # or: npm install
+
+# Create a local environment file
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+
+# Start the development server (requires backend running on :8000)
+pnpm dev               # opens http://localhost:3000
+
+# Build for production
+pnpm build && pnpm start
+```
+
 ### Running Tests
 
 ```bash
-# Install dev dependencies (pytest, respx, etc.) if not already done
+# Backend tests
 uv sync --extra dev
+uv run python -m pytest tests/ -v   # 56 tests
 
-# Run all 51 tests with verbose output
-uv run python -m pytest tests/ -v
+# Frontend tests
+cd frontend
+pnpm test                           # 12 tests
 ```
 
 ### Stopping Everything
@@ -2017,10 +2115,449 @@ docker compose down   # Stops PostgreSQL, Ollama, and the API
 
 ---
 
-## 26. Glossary
+## 26. The Standings API Endpoints — New Backend Routes for the UI
+
+**File:** `api/routes/standings.py`
+
+The frontend's right-hand sidebar needs live driver and constructor standings.
+Rather than having the browser call the Jolpica API directly (which would expose
+the external URL and require CORS setup on Jolpica's side), the FastAPI backend
+acts as a thin **proxy** — it calls Jolpica and returns a clean, flat JSON
+response the UI can consume directly.
+
+### Two Endpoints
+
+```
+GET /standings/drivers
+→ [{ "position": 1, "driver": "Max Verstappen", "team": "Red Bull Racing", "points": 136 }, ...]
+
+GET /standings/constructors
+→ [{ "position": 1, "team": "Red Bull Racing", "points": 249 }, ...]
+```
+
+### How the Proxy Works
+
+```
+Browser  →  GET /standings/drivers
+               │
+               ▼
+           FastAPI (api/routes/standings.py)
+               │
+               ▼
+           httpx.AsyncClient.get(
+             "https://api.jolpi.ca/ergast/f1/current/driverStandings.json"
+           )
+               │
+               ▼
+           Parse nested JSON:
+           data["MRData"]["StandingsTable"]["StandingsLists"][0]["DriverStandings"]
+               │
+               ▼
+           Map each row → DriverStanding(position, driver, team, points)
+               │
+               ▼
+           Return list[DriverStanding] as JSON
+```
+
+**Error handling:** Any exception (network error, malformed response, Jolpica
+returning 5xx) is caught and re-raised as `HTTPException(status_code=503)`.
+The UI receives a `503 Standings unavailable` response instead of an
+unhandled 500 error.
+
+**What if the season hasn't started yet?** If `StandingsLists` is empty (no
+races have been run), the endpoint returns `[]` — an empty list, not an error.
+
+---
+
+## 27. The Frontend — How the Chat UI Was Built
+
+**Directory:** `frontend/`
+
+The frontend is a Next.js app with a single page. The layout splits the screen
+into two panels side by side:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Navbar  (F1 brand + API health dot)                 │
+├──────────────────────────┬───────────────────────────┤
+│                          │                           │
+│   ChatPanel              │   StandingsPanel          │
+│   (flex-1, scrollable)   │   (280px fixed, md+)      │
+│                          │                           │
+│   [F1] Ask me anything   │   2025 Season             │
+│        about F1...       │   Live standings          │
+│                          │   ─────────────────────   │
+│   [User] Who won 1988?   │   Drivers  Constructors   │
+│                          │   ─────────────────────   │
+│   [F1]  Ayrton Senna...  │   1 ▌ Verstappen  136     │
+│         HISTORICAL 142ms │   2 ▌ Norris      113     │
+│         ◈ jolpica        │   3 ▌ Leclerc     98      │
+│                          │                           │
+│   [ Type a message... ]  │                           │
+└──────────────────────────┴───────────────────────────┘
+```
+
+### How Each Request Flows
+
+**Chat (streaming):**
+1. User types a message and presses Enter.
+2. `useChat` immediately appends a placeholder AI message with a spinning dots animation.
+3. `streamChat()` opens a `GET /chat/stream?query=...` request and reads the
+   SSE stream token by token — each token is appended to the AI message live.
+4. When the stream ends (`[DONE]`), `streaming: false` is set and the dots disappear.
+5. If the SSE stream fails, `sendChat()` (POST /chat) is called as a fallback,
+   returning a complete answer in one response.
+
+**Standings:**
+1. `useStandings` fires on component mount.
+2. Both `fetchDriverStandings()` and `fetchConstructorStandings()` are called in
+   parallel with `Promise.all`.
+3. Results are stored in state and displayed immediately.
+4. A `setInterval` repeats the fetch every 6 hours.
+
+---
+
+## 28. lib/api.ts — The Frontend API Client
+
+**File:** `frontend/lib/api.ts`
+
+All communication with the backend goes through five exported functions. The
+base URL defaults to `http://localhost:8000` but is overridden in production via
+the `NEXT_PUBLIC_API_URL` environment variable.
+
+### `streamChat(query, onToken, onDone, signal?)`
+
+Opens the SSE stream manually using the browser's `fetch` API (no library needed):
+
+```
+fetch(`/chat/stream?query=...`)
+  → response.body.getReader()          ← raw bytes
+  → TextDecoder                        ← bytes → string
+  → split on "\n"                      ← split into lines
+  → filter lines starting with "data:" ← SSE format
+  → JSON.parse payload                 ← { "token": "Max" }
+  → call onToken(token)
+  → when payload === "[DONE]": call onDone(), return
+```
+
+**Why not use the built-in `EventSource` API?** `EventSource` only supports GET
+requests with no custom headers and reconnects automatically on error — both
+unwanted here. Manual `fetch` + `ReadableStream` gives full control.
+
+**Buffer handling:** The decoder may return a partial line at the end of a chunk.
+The code keeps a `buffer` string across iterations: after splitting on `\n`, the
+last element (potentially incomplete) is kept in the buffer and prepended to the
+next chunk.
+
+### `sendChat(query) → ChatResponse`
+
+Simple `POST /chat` fallback. Returns a `ChatResponse` with `answer`, `sources`,
+`intent`, and `latency_ms`.
+
+### `fetchDriverStandings()` / `fetchConstructorStandings()`
+
+Plain `fetch` calls to `GET /standings/drivers` and `GET /standings/constructors`.
+Throw on non-OK responses so `useStandings` can catch them and set `error=true`.
+
+### `checkHealth() → boolean`
+
+Used by the Navbar to show the green/red dot. Returns `true` if `GET /health`
+responds with any 2xx status, `false` if it throws or returns an error.
+
+---
+
+## 29. useChat — Streaming Messages to the Screen
+
+**File:** `frontend/hooks/useChat.ts`
+
+`useChat` is a React hook that manages the full lifecycle of a conversation.
+
+### State
+
+```typescript
+messages: Message[]   // the full conversation history
+isStreaming: boolean   // true while an AI response is in progress
+```
+
+A `Message` has:
+- `id` — random string (for React's `key` prop)
+- `role` — `"user"` or `"ai"`
+- `content` — the message text (built up token by token for AI messages)
+- `streaming` — `true` while the AI is still typing
+- `intent`, `latency_ms`, `sources` — populated after the AI finishes
+
+### What Happens When You Send a Message
+
+```
+sendMessage("Who won 1988?")
+  │
+  ├── 1. Append user message to state immediately
+  ├── 2. Append placeholder AI message { content: "", streaming: true }
+  ├── 3. setIsStreaming(true)
+  │
+  ├── 4. Call streamChat():
+  │       onToken("Ayrton") → update AI message content += "Ayrton"
+  │       onToken(" Senna") → update AI message content += " Senna"
+  │       ...
+  │       onDone()          → set AI message { streaming: false }
+  │                            setIsStreaming(false)
+  │
+  └── If streamChat throws:
+        Call sendChat() → fill AI message with full answer + sources + intent
+        setIsStreaming(false) in finally block
+```
+
+### Why Set Both Messages at Once (Not One at a Time)?
+
+When the user submits, two state updates happen in sequence — the user message
+and the AI placeholder. React batches these into a single re-render so the UI
+never shows a flash of the user message without the AI placeholder below it.
+
+---
+
+## 30. useStandings — The Live Standings Sidebar
+
+**File:** `frontend/hooks/useStandings.ts`
+
+A simple data-fetching hook that loads standings once on mount and auto-refreshes.
+
+```typescript
+const { drivers, constructors, loading, error } = useStandings()
+```
+
+### Loading Strategy
+
+```
+On mount:
+  load()
+    → Promise.all([fetchDriverStandings(), fetchConstructorStandings()])
+    → setDrivers(d), setConstructors(c)
+    → setLoading(false)
+
+Every 6 hours:
+  setInterval(load, 6 * 60 * 60 * 1000)
+
+On unmount:
+  clearInterval(interval)   ← prevents memory leaks
+```
+
+**Why `Promise.all`?** Fetching drivers and constructors in parallel (at the same
+time) cuts the load time in half compared to fetching one then the other.
+
+**Error state:** If either request fails, `error` is set to `true` and the
+sidebar shows "Standings unavailable." The component never crashes.
+
+---
+
+## 31. The Components — Building Blocks of the UI
+
+### `<Navbar>`
+
+The top bar, always visible. Contains:
+- The F1 badge (red pill with white "F1" text)
+- The word "Chatbot" next to it
+- A live API health indicator on the right: a tiny coloured dot (green = connected,
+  red = offline) next to the text "API Connected" / "API Offline"
+
+The health check runs once when the page loads via `useEffect` calling
+`checkHealth()`.
+
+### `<SplitLayout>`
+
+A `flex` row that fills the remaining height below the Navbar:
+- **Left:** `<ChatPanel>` with `flex-1` (takes all available width)
+- **Right:** `<StandingsPanel>` inside a `hidden md:flex` wrapper (invisible on
+  screens narrower than 768px, visible on wider screens)
+
+### `<ChatPanel>`
+
+The main chat area. Responsibilities:
+- Renders the welcome message when `messages` is empty
+- Maps `messages` to `<MessageBubble>` components
+- Auto-scrolls to the bottom when a new message arrives (via `useRef` + `scrollIntoView`)
+- `aria-live="polite"` on the message list so screen readers announce new messages
+
+### `<MessageBubble>`
+
+Renders one message. The visual style differs by role:
+- **User messages:** float right, grey background, rounded differently (`12px 2px 12px 12px`)
+- **AI messages:** float left, dark red background (`#160000`), rounded differently (`2px 12px 12px 12px`)
+
+AI messages also show:
+- An **intent badge** (`HISTORICAL` / `CURRENT` / `MIXED`) and latency in milliseconds
+- **Streaming dots** while `streaming=true` and content is empty — three dots
+  that bounce with a staggered CSS animation
+- **Source chips** below the bubble once the response is complete
+
+### `<ChatInput>`
+
+The input area at the bottom:
+- `<textarea>` that grows as you type (up to 120px height), using an `onInput`
+  handler that reads `scrollHeight` and sets the element's height directly
+- **Enter** sends the message, **Shift+Enter** inserts a newline
+- The border turns red on focus (the `--f1-red` custom property)
+- Disabled while `isStreaming` is true — you can't send a new message while the
+  AI is still responding
+
+### `<StandingsRow>`
+
+Each row in the standings sidebar shows:
+- A position number (red for top 3, grey for others)
+- A thin vertical **colour bar** — the team's official hex colour from `teamColors.ts`
+- Driver name formatted as `"Lastname, F."` (e.g. "Verstappen, M.") for drivers,
+  or the full team name for constructors
+- The team name in small grey text (driver rows only)
+- Points right-aligned, integer if whole, one decimal place if fractional (e.g. `136` or `136.5`)
+
+### `<SourceChip>`
+
+A small pill shown below AI responses that cited sources from the knowledge base.
+Displays a red diamond icon `◈`, the source name (e.g. `jolpica`), and the
+content type (e.g. `· race_result`).
+
+---
+
+## 32. The F1 Dark Theme
+
+**File:** `frontend/app/globals.css`
+
+Instead of hardcoding colours in every component, we define **CSS custom
+properties** (CSS variables) once on `:root` and reference them everywhere.
+This makes the theme easy to update — change a variable in one place and every
+component that uses it changes automatically.
+
+```css
+:root {
+  --f1-red:       #E10600;   /* The official F1 red */
+  --f1-bg:        #0a0a0a;   /* Nearly-black page background */
+  --f1-surface:   #111111;   /* Navbar and panel backgrounds */
+  --f1-surface-2: #1a1a1a;   /* Input fields, user bubbles, chips */
+  --f1-border:    #1f1f1f;   /* All dividers and borders */
+  --f1-text:      #e0e0e0;   /* Primary text */
+  --f1-muted:     #555555;   /* Secondary text, timestamps, labels */
+}
+```
+
+In a component:
+```tsx
+<nav style={{ borderBottom: "2px solid var(--f1-red)" }}>
+```
+
+**Why not a `.dark` class?** The app is always dark — there's no light/dark
+toggle. Defining all colours on `:root` is simpler than maintaining a separate
+`.dark` block.
+
+### Team Colours
+
+**File:** `frontend/lib/teamColors.ts`
+
+```typescript
+export const TEAM_COLORS: Record<string, string> = {
+  'Red Bull Racing': '#3671C6',
+  'McLaren': '#FF8000',
+  'Ferrari': '#E8002D',
+  'Mercedes': '#00A3E0',
+  // ...
+}
+
+export function getTeamColor(team: string): string {
+  return TEAM_COLORS[team] ?? '#666666'   // fallback grey for unknown teams
+}
+```
+
+Multiple aliases are stored for the same team because the Jolpica API uses
+different name spellings depending on the endpoint (e.g. `"RB"`, `"Racing Bulls"`,
+and `"Visa Cash App RB"` are all the same team).
+
+---
+
+## 33. Frontend Tests — Vitest + React Testing Library
+
+The frontend tests live in `frontend/__tests__/` and run with Vitest in a
+simulated browser environment (jsdom).
+
+### What Is jsdom?
+
+A real browser (Chrome, Safari) renders HTML and runs JavaScript. **jsdom** is
+a JavaScript library that simulates a browser environment in Node.js — it
+provides `document`, `window`, and DOM APIs so React components can render and
+be tested without opening a real browser. Tests run instantly in the terminal.
+
+### What Is React Testing Library?
+
+React Testing Library (RTL) provides utilities that render a component and let
+you query the output the way a user would see it:
+
+```typescript
+render(<MessageBubble message={aiMsg} />)
+expect(screen.getByText('Ayrton Senna won.')).toBeTruthy()
+// ↑ "find an element that contains this text" — not "find a div with class X"
+```
+
+This is intentional — testing by text content and roles (rather than CSS classes
+or DOM structure) means tests stay valid even if you refactor the HTML.
+
+### How API Calls Are Mocked
+
+The hooks (`useChat`, `useStandings`) import from `@/lib/api`. In tests, the
+entire module is replaced with a Vitest mock using `vi.mock('@/lib/api')`:
+
+```typescript
+vi.mock('@/lib/api')
+
+vi.mocked(api.streamChat).mockImplementation(async (_q, onToken, onDone) => {
+  onToken('Max ')
+  onToken('won.')
+  onDone()
+})
+```
+
+When the hook calls `streamChat`, it calls this fake version instead of making
+a real HTTP request. The test controls exactly what tokens arrive and when.
+
+### Test Files
+
+#### `__tests__/MessageBubble.test.tsx` — 4 Tests
+
+Renders the `<MessageBubble>` component directly and checks the output:
+
+| Test | What It Checks |
+|------|---------------|
+| `renders user message content` | The user's question text appears in the DOM |
+| `renders AI answer and intent badge` | The answer text and the `HISTORICAL` badge both appear |
+| `renders source chip for AI message` | The `jolpica` chip appears below an AI message with sources |
+| `renders streaming dots when streaming=true` | A `.streaming-dots` element appears when `content=""` and `streaming=true` |
+
+#### `__tests__/useChat.test.ts` — 5 Tests
+
+Tests the hook's behaviour by rendering it with `renderHook` and simulating
+sends with `act`:
+
+| Test | What It Checks |
+|------|---------------|
+| `starts with empty messages` | `messages.length === 0` before any interaction |
+| `appends user message immediately on send` | First message has `role: "user"` and the correct content |
+| `appends AI message with streamed tokens` | Tokens from `onToken` are concatenated into the AI message's content |
+| `sets streaming=false after stream completes` | `isStreaming` is `false` after `onDone` is called |
+| `falls back to sendChat on stream error` | When `streamChat` rejects, the POST fallback's answer appears |
+
+#### `__tests__/useStandings.test.ts` — 3 Tests
+
+Tests the data-fetching hook:
+
+| Test | What It Checks |
+|------|---------------|
+| `fetches driver and constructor standings on mount` | Both arrays are populated after the hook mounts |
+| `sets error when fetch fails` | `error === true` when `fetchDriverStandings` rejects |
+| `starts in loading state` | `loading === true` before the first fetch completes |
+
+---
+
+## 34. Glossary
 
 | Term | Definition |
 |------|-----------|
+| **App Router** | The routing system in Next.js 13+. Files in `app/` define routes; `page.tsx` is what renders at a URL. |
 | **API** | A way for programs to communicate. Our code calls F1 APIs to get data. |
 | **APScheduler** | A Python library for running functions on a repeating schedule (e.g. every 6 hours). |
 | **Async** | A programming style where the program can do other work while waiting for slow operations (like network requests). |
@@ -2057,6 +2594,20 @@ docker compose down   # Stops PostgreSQL, Ollama, and the API
 | **Upsert** | "Update or Insert" — insert a row if it doesn't exist, update it if it does. |
 | **Vector** | A list of numbers. In our case, 768 numbers that represent the meaning of text. |
 | **Virtual Environment** | An isolated Python installation for a project, preventing library conflicts. |
+| **Component** | In React, a function that returns UI (HTML-like JSX). Components are composed together to build pages. |
+| **CSS Custom Property** | A variable in CSS defined with `--name: value` and used with `var(--name)`. Our F1 theme uses these for colours. |
+| **Hook** | In React, a function starting with `use` (like `useChat`) that encapsulates state and effects. |
+| **jsdom** | A JavaScript library that simulates a browser environment in Node.js, used to run React component tests without a real browser. |
+| **Next.js** | A React framework that adds file-based routing, server/client component split, and deployment tooling. |
+| **pnpm** | A fast JavaScript package manager (alternative to npm). Used for the frontend dependencies. |
+| **React** | A JavaScript library for building UIs from components. The frontend is built with React 19. |
+| **React Testing Library** | A testing utility that renders React components and lets you query them the way a user would. |
+| **ReadableStream** | A browser API for reading data incrementally as it arrives — used to consume the SSE chat stream. |
+| **SSE (Server-Sent Events)** | A browser standard for receiving a one-way stream of events from a server over HTTP. Used for streaming chat tokens. |
+| **Tailwind CSS** | A utility-first CSS framework where styles are applied via class names rather than separate CSS files. |
+| **TypeScript** | A superset of JavaScript that adds type annotations. Catches bugs before you run the code. |
+| **Vercel** | A cloud platform for deploying Next.js apps. The frontend is deployed here. |
+| **Vitest** | A fast JavaScript test runner built on Vite. Runs the frontend unit tests. |
 | **Wikitext** | Wikipedia's markup language, which includes templates, links, and refs that we clean before storing. |
 | **yield** | A Python keyword that produces values one at a time from a generator function, instead of returning all at once. |
 | **Agent** | The core reasoning loop (Phase 3). Orchestrates routing, retrieval, tool calls, and LLM streaming. |
