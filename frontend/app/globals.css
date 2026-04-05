@@ -81,6 +81,11 @@
   --sidebar-ring: 0 0% 83.1%;
 }
 
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-6px); }
+}
+
 @layer base {
   * {
     box-sizing: border-box;

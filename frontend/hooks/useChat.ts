@@ -30,13 +30,13 @@ export function useChat() {
           )
         },
         () => {
+          streamSucceeded = true
           setMessages(prev =>
             prev.map(m => m.id === aiId ? { ...m, streaming: false } : m)
           )
           setIsStreaming(false)
         }
       )
-      streamSucceeded = true
     } catch {
       // SSE failed — fall back to POST /chat
     } finally {

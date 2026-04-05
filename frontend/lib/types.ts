@@ -4,7 +4,7 @@ export interface ChatRequest {
 }
 
 export interface Source {
-  content_type: string
+  content_type?: string
   source: string
   metadata: Record<string, unknown>
 }

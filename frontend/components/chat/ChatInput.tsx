@@ -43,6 +43,7 @@ export function ChatInput({ onSend, disabled }: Props) {
         onChange={e => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         onInput={handleInput}
+        aria-label="Chat message"
         placeholder="Ask about F1 history or the current season..."
         className="flex-1 resize-none rounded-lg px-3.5 py-2.5 text-sm outline-none disabled:opacity-50"
         style={{

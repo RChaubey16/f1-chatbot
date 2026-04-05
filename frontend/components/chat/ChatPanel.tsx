@@ -16,7 +16,7 @@ export function ChatPanel() {
   return (
     <div className="flex flex-col flex-1 min-w-0 border-r" style={{ borderColor: 'var(--f1-border)' }}>
       {/* Message list */}
-      <div className="flex-1 overflow-y-auto flex flex-col gap-5 p-6">
+      <div aria-live="polite" className="flex-1 overflow-y-auto flex flex-col gap-5 p-6">
         {messages.length === 0 && (
           <div className="flex gap-3">
             <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
