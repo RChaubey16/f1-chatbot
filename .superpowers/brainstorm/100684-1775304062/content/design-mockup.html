@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F1 Chatbot — Design Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0a; font-family: 'Inter', -apple-system, sans-serif; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+  /* Top Nav */
+  .navbar {
+    background: #111;
+    border-bottom: 2px solid #E10600;
+    padding: 0 24px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.05em;
+  }
+  .navbar-brand .f1-icon {
+    background: #E10600;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 900;
+    padding: 3px 7px;
+    border-radius: 3px;
+    letter-spacing: 0.1em;
+  }
+  .navbar-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #666;
+  }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+
+  /* Main layout */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Chat panel */
+  .chat-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #1f1f1f;
+    min-width: 0;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .message { display: flex; gap: 12px; max-width: 100%; }
+  .message.user { flex-direction: row-reverse; }
+
+  .avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .avatar.ai { background: #E10600; color: #fff; font-size: 11px; }
+  .avatar.user { background: #222; color: #aaa; border: 1px solid #333; }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: 12px;
+    max-width: 75%;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .message.user .bubble { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px 2px 12px 12px; }
+  .message.ai .bubble { background: #160000; border: 1px solid #2a0000; border-radius: 2px 12px 12px 12px; }
+
+  .sources {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .source-chip {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: #888;
+  }
+  .source-chip span { color: #E10600; }
+
+  .typing-indicator {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .typing-indicator .dot {
+    width: 6px; height: 6px;
+    background: #E10600;
+    border-radius: 50%;
+    animation: bounce 1.2s infinite;
+  }
+  .typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+
+  /* Chat input */
+  .chat-input-area {
+    padding: 16px 24px;
+    border-top: 1px solid #1f1f1f;
+    background: #0d0d0d;
+    flex-shrink: 0;
+  }
+  .chat-input-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .chat-input {
+    flex: 1;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    color: #e0e0e0;
+    font-size: 14px;
+    padding: 10px 14px;
+    resize: none;
+    outline: none;
+    font-family: inherit;
+    line-height: 1.5;
+  }
+  .chat-input:focus { border-color: #E10600; }
+  .send-btn {
+    background: #E10600;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .intent-badge {
+    font-size: 11px;
+    color: #555;
+    margin-bottom: 6px;
+    display: flex;
+    gap: 8px;
+  }
+  .intent-badge .tag {
+    background: #1a1a1a;
+    border: 1px solid #222;
+    border-radius: 3px;
+    padding: 1px 6px;
+    color: #E10600;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+
+  /* Standings panel */
+  .standings-panel {
+    width: 280px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: #0d0d0d;
+  }
+
+  .panel-header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #1f1f1f;
+    flex-shrink: 0;
+  }
+  .panel-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: #E10600;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .panel-subtitle { font-size: 11px; color: #555; }
+
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid #1f1f1f;
+    flex-shrink: 0;
+  }
+  .tab {
+    flex: 1;
+    padding: 8px 0;
+    text-align: center;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: #E10600; border-bottom-color: #E10600; }
+
+  .standings-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 0;
+  }
+
+  .standing-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 20px;
+    border-bottom: 1px solid #111;
+  }
+  .standing-row:hover { background: #131313; }
+
+  .pos {
+    width: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #555;
+    flex-shrink: 0;
+    text-align: center;
+  }
+  .pos.top { color: #E10600; }
+
+  .team-bar {
+    width: 3px;
+    height: 28px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .driver-info { flex: 1; min-width: 0; }
+  .driver-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .driver-team { font-size: 11px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .driver-pts {
+    font-size: 13px;
+    font-weight: 700;
+    color: #aaa;
+    flex-shrink: 0;
+  }
+
+  .panel-footer {
+    padding: 12px 20px;
+    border-top: 1px solid #1f1f1f;
+    font-size: 11px;
+    color: #444;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+  <div class="navbar-brand">
+    <span class="f1-icon">F1</span>
+    <span>Chatbot</span>
+  </div>
+  <div class="navbar-status">
+    <div class="status-dot"></div>
+    API Connected
+  </div>
+</nav>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Chat Panel -->
+  <div class="chat-panel">
+    <div class="chat-messages">
+
+      <!-- Welcome -->
+      <div class="message ai">
+        <div class="avatar ai">F1</div>
+        <div>
+          <div class="bubble">
+            Ask me anything about Formula 1 — race history from 1950 to today, driver stats, constructor battles, and live 2025 season updates.
+          </div>
+        </div>
+      </div>
+
+      <!-- User message -->
+      <div class="message user">
+        <div class="avatar user">U</div>
+        <div class="bubble">Who dominated the 2023 season and why?</div>
+      </div>
+
+      <!-- AI response -->
+      <div class="message ai">
+        <div class="avatar ai">F1</div>
+        <div>
+          <div class="intent-badge">
+            <span class="tag">HISTORICAL</span>
+            <span>· 142ms</span>
+          </div>
+          <div class="bubble">
+            Max Verstappen and Red Bull Racing dominated the 2023 season in unprecedented fashion. Verstappen won 19 of 22 races — a record — securing his third consecutive World Drivers' Championship with six rounds to spare. Red Bull's RB19 was widely regarded as the most dominant single-season car in F1 history, combining exceptional downforce with low drag and tire efficiency...
+          </div>
+          <div class="sources">
+            <div class="source-chip"><span>◈</span> wikipedia · 2023_F1_Season</div>
+            <div class="source-chip"><span>◈</span> jolpica · results/2023</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Streaming indicator -->
+      <div class="message ai">
+        <div class="avatar ai">F1</div>
+        <div>
+          <div class="bubble">
+            <div class="typing-indicator">
+              <div class="dot"></div>
+              <div class="dot"></div>
+              <div class="dot"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Input area -->
+    <div class="chat-input-area">
+      <div class="chat-input-row">
+        <textarea class="chat-input" rows="1" placeholder="Ask about F1 history or the current season..."></textarea>
+        <button class="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Standings Panel -->
+  <div class="standings-panel">
+    <div class="panel-header">
+      <div class="panel-title">2025 Season</div>
+      <div class="panel-subtitle">Live standings</div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active">Drivers</div>
+      <div class="tab">Constructors</div>
+    </div>
+
+    <div class="standings-list">
+
+      <div class="standing-row">
+        <div class="pos top">1</div>
+        <div class="team-bar" style="background:#3671C6;"></div>
+        <div class="driver-info">
+          <div class="driver-name">M. Verstappen</div>
+          <div class="driver-team">Red Bull Racing</div>
+        </div>
+        <div class="driver-pts">136</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos top">2</div>
+        <div class="team-bar" style="background:#FF8000;"></div>
+        <div class="driver-info">
+          <div class="driver-name">L. Norris</div>
+          <div class="driver-team">McLaren</div>
+        </div>
+        <div class="driver-pts">113</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos top">3</div>
+        <div class="team-bar" style="background:#E8002D;"></div>
+        <div class="driver-info">
+          <div class="driver-name">C. Leclerc</div>
+          <div class="driver-team">Ferrari</div>
+        </div>
+        <div class="driver-pts">98</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos">4</div>
+        <div class="team-bar" style="background:#E8002D;"></div>
+        <div class="driver-info">
+          <div class="driver-name">C. Sainz</div>
+          <div class="driver-team">Ferrari</div>
+        </div>
+        <div class="driver-pts">87</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos">5</div>
+        <div class="team-bar" style="background:#00A3E0;"></div>
+        <div class="driver-info">
+          <div class="driver-name">G. Russell</div>
+          <div class="driver-team">Mercedes</div>
+        </div>
+        <div class="driver-pts">72</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos">6</div>
+        <div class="team-bar" style="background:#00A3E0;"></div>
+        <div class="driver-info">
+          <div class="driver-name">L. Hamilton</div>
+          <div class="driver-team">Mercedes</div>
+        </div>
+        <div class="driver-pts">68</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos">7</div>
+        <div class="team-bar" style="background:#FF8000;"></div>
+        <div class="driver-info">
+          <div class="driver-name">O. Piastri</div>
+          <div class="driver-team">McLaren</div>
+        </div>
+        <div class="driver-pts">61</div>
+      </div>
+
+      <div class="standing-row">
+        <div class="pos">8</div>
+        <div class="team-bar" style="background:#3671C6;"></div>
+        <div class="driver-info">
+          <div class="driver-name">S. Pérez</div>
+          <div class="driver-team">Red Bull Racing</div>
+        </div>
+        <div class="driver-pts">49</div>
+      </div>
+
+    </div>
+
+    <div class="panel-footer">
+      Updated via OpenF1 · Refreshes every 6h
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

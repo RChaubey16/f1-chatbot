@@ -1,0 +1,83 @@
+<h2>Frontend Layout Approaches</h2>
+<p class="subtitle">Three ways to structure the chat + data panel experience. Click to select.</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#111;border-radius:6px;padding:12px;font-family:monospace;font-size:11px;color:#ccc;min-height:140px;">
+        <div style="display:flex;gap:8px;height:120px;">
+          <div style="flex:1;background:#1a1a1a;border-radius:4px;padding:8px;">
+            <div style="color:#E10600;font-size:9px;font-weight:bold;margin-bottom:6px;">CHAT</div>
+            <div style="background:#222;border-radius:3px;padding:4px 6px;margin-bottom:4px;font-size:9px;">User: Who won 2023?</div>
+            <div style="background:#2a0a0a;border-radius:3px;padding:4px 6px;font-size:9px;">AI: Max Verstappen...</div>
+            <div style="margin-top:auto;padding-top:8px;">
+              <div style="background:#E10600;border-radius:3px;padding:3px 6px;font-size:8px;text-align:center;color:#fff;">Send</div>
+            </div>
+          </div>
+          <div style="width:90px;background:#1a1a1a;border-radius:4px;padding:8px;">
+            <div style="color:#E10600;font-size:9px;font-weight:bold;margin-bottom:6px;">STANDINGS</div>
+            <div style="font-size:8px;margin-bottom:3px;">1. Verstappen</div>
+            <div style="font-size:8px;margin-bottom:3px;">2. Norris</div>
+            <div style="font-size:8px;margin-bottom:3px;">3. Leclerc</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Split Layout</h3>
+      <p>Chat on the left, standings panel always visible on the right. Two-column side-by-side.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Standings always visible</li><li>Familiar layout pattern</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Chat area is narrower</li><li>Sidebar clutters on mobile</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#111;border-radius:6px;padding:12px;font-family:monospace;font-size:11px;color:#ccc;min-height:140px;">
+        <div style="height:120px;background:#1a1a1a;border-radius:4px;padding:8px;position:relative;">
+          <div style="color:#E10600;font-size:9px;font-weight:bold;margin-bottom:6px;">CHAT — FULL WIDTH</div>
+          <div style="background:#222;border-radius:3px;padding:4px 6px;margin-bottom:4px;font-size:9px;">User: Who won 2023?</div>
+          <div style="background:#2a0a0a;border-radius:3px;padding:4px 6px;font-size:9px;">AI: Max Verstappen...</div>
+          <div style="position:absolute;top:8px;right:8px;background:#E10600;color:#fff;font-size:8px;border-radius:3px;padding:2px 5px;">Standings ▶</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Chat + Slide-out Drawer</h3>
+      <p>Chat is full-width by default. A toggle button opens a standings drawer from the right.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Chat gets full focus</li><li>Clean on mobile</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Extra click for standings</li><li>Drawer hides chat</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#111;border-radius:6px;padding:12px;font-family:monospace;font-size:11px;color:#ccc;min-height:140px;">
+        <div style="height:120px;background:#1a1a1a;border-radius:4px;padding:8px;">
+          <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <div style="background:#E10600;color:#fff;font-size:8px;border-radius:3px;padding:2px 6px;">Chat</div>
+            <div style="background:#333;color:#ccc;font-size:8px;border-radius:3px;padding:2px 6px;">Standings</div>
+          </div>
+          <div style="background:#222;border-radius:3px;padding:4px 6px;margin-bottom:4px;font-size:9px;">User: Who won 2023?</div>
+          <div style="background:#2a0a0a;border-radius:3px;padding:4px 6px;font-size:9px;">AI: Max Verstappen...</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Tabbed Single Page</h3>
+      <p>One page with tabs: Chat and Standings. Switch between full-screen views.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Both views get full width</li><li>Simple, mobile-first</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Can't see both at once</li><li>Less dynamic feel</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top:16px;">⭐ My recommendation: <strong>A — Split Layout</strong> — best for desktop-first use, standings stay visible while chatting, and the two-column pattern is immediately intuitive for an F1 data tool.</p>
