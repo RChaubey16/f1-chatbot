@@ -33,7 +33,7 @@ export function useStandings() {
     load()
     const interval = setInterval(load, SIX_HOURS_MS)
     return () => clearInterval(interval)
-  }, [])
+  }, [load])
 
   return { drivers, constructors, loading, error }
 }

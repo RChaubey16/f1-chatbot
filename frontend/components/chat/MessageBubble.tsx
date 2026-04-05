@@ -65,7 +65,7 @@ export function MessageBubble({ message }: Props) {
         {/* Sources */}
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {message.sources.map((s, i) => (
+            {message.sources.map((s) => (
               <SourceChip key={`${s.source}-${s.content_type ?? 'unknown'}`} source={s} />
             ))}
           </div>

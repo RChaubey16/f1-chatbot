@@ -31,7 +31,7 @@ export function StandingsRow({ position, name, team, points }: Props) {
         )}
       </div>
       <span className="text-[13px] font-bold flex-shrink-0" style={{ color: '#aaa' }}>
-        {points}
+        {Number.isInteger(points) ? points : points.toFixed(1)}
       </span>
     </div>
   )
