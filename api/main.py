@@ -1,7 +1,9 @@
 """F1 Chatbot FastAPI application."""
 
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from agent.agent import Agent
 from ingestion.scheduler import create_scheduler
@@ -13,10 +15,14 @@ import api.routes.standings as standings_router
 
 log = get_logger(__name__)
 
+_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    os.environ.get("FRONTEND_URL", ""),
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     log.info("Starting F1 Chatbot API")
     app.state.agent = Agent()
     scheduler = create_scheduler()
@@ -26,7 +32,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     log.info("Shutting down F1 Chatbot API")
     try:
         app.state.scheduler.shutdown(wait=False)
@@ -40,6 +45,13 @@ app = FastAPI(
     title="F1 Chatbot API",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o for o in _ALLOWED_ORIGINS if o],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 app.include_router(chat_router.router)
